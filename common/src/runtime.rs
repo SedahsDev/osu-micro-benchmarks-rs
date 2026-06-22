@@ -270,6 +270,123 @@ impl OsUContext {
         }
     }
 
+    /// Reduce a f64 value to find the minimum across all ranks (UCX fallback).
+    pub fn allreduce_min_f64(&self, value: f64) -> f64 {
+        let bits = value.to_bits();
+        let summed = self.allreduce_u64(bits);
+        // We need proper min reduction — use allgather + local min
+        let rank = self.rank;
+        let size = self.size;
+        let mut gathered = vec![0u64; size];
+        gathered[rank] = bits;
+        // Reuse the allgather pattern from allreduce_u64
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const MIN_TAG: u64 = 0xDEAD0001;
+        const TAG_MASK: u64 = u64::MAX;
+        if size <= 1 {
+            return value;
+        }
+        // All-to-all exchange
+        for peer in 0..size {
+            if peer != rank {
+                self.endpoint(peer)
+                    .tag_send(&bits.to_le_bytes(), MIN_TAG, &tag_param)
+                    .expect("min send");
+            }
+        }
+        let mut recv_buf = [0u8; 8];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self
+                    .worker
+                    .tag_recv(&mut recv_buf, MIN_TAG, TAG_MASK, &tag_param)
+                    .expect("min recv")
+                    .expect("min recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                gathered[peer] = u64::from_le_bytes(recv_buf);
+            }
+        }
+        let min_bits = gathered.into_iter().map(|b| f64::from_bits(b)).fold(f64::INFINITY, f64::min);
+        drop(summed);
+        min_bits
+    }
+
+    /// Reduce a f64 value to find the maximum across all ranks (UCX fallback).
+    pub fn allreduce_max_f64(&self, value: f64) -> f64 {
+        let bits = value.to_bits();
+        let rank = self.rank;
+        let size = self.size;
+        let mut gathered = vec![0u64; size];
+        gathered[rank] = bits;
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const MAX_TAG: u64 = 0xDEAD0002;
+        const TAG_MASK: u64 = u64::MAX;
+        if size <= 1 {
+            return value;
+        }
+        for peer in 0..size {
+            if peer != rank {
+                self.endpoint(peer)
+                    .tag_send(&bits.to_le_bytes(), MAX_TAG, &tag_param)
+                    .expect("max send");
+            }
+        }
+        let mut recv_buf = [0u8; 8];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self
+                    .worker
+                    .tag_recv(&mut recv_buf, MAX_TAG, TAG_MASK, &tag_param)
+                    .expect("max recv")
+                    .expect("max recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                gathered[peer] = u64::from_le_bytes(recv_buf);
+            }
+        }
+        gathered.into_iter().map(|b| f64::from_bits(b)).fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// Sum a f64 value across all ranks (UCX fallback).
+    pub fn allreduce_sum_f64(&self, value: f64) -> f64 {
+        let bits = value.to_bits();
+        let rank = self.rank;
+        let size = self.size;
+        let mut gathered = vec![0u64; size];
+        gathered[rank] = bits;
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const SUM_TAG: u64 = 0xDEAD0003;
+        const TAG_MASK: u64 = u64::MAX;
+        if size <= 1 {
+            return value;
+        }
+        for peer in 0..size {
+            if peer != rank {
+                self.endpoint(peer)
+                    .tag_send(&bits.to_le_bytes(), SUM_TAG, &tag_param)
+                    .expect("sum send");
+            }
+        }
+        let mut recv_buf = [0u8; 8];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self
+                    .worker
+                    .tag_recv(&mut recv_buf, SUM_TAG, TAG_MASK, &tag_param)
+                    .expect("sum recv")
+                    .expect("sum recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                gathered[peer] = u64::from_le_bytes(recv_buf);
+            }
+        }
+        gathered.into_iter().map(|b| f64::from_bits(b)).sum()
+    }
+
     /// Allreduce a u64 value using UCX tag matching (ring algorithm).
     pub fn allreduce_u64(&self, value: u64) -> u64 {
         let rank = self.rank;
@@ -334,126 +451,24 @@ fn flush_ep_blocking(worker: &worker::Worker, _ep: &ep::Ep, param: &ucx_sys::Req
 
 /// Initialize UCC library, context, and team.
 ///
-/// Uses UCX tag matching as the OOB (out-of-band) transport for UCC's
-/// internal allgather during context and team creation.
+/// TEMPORARILY DISABLED: UCC team creation segfaults on subsequent collective
+/// calls (OOB callback crashes after first call). Return None so all collectives
+/// use the UCX fallback methods (ctx.barrier(), ctx.allreduce_*_f64(), etc.).
+///
+/// The original UCC initialization code is commented out below for reference
+/// and future re-enablement once the segfault is resolved.
+#[allow(unused_variables)]
 fn init_ucc(
-    worker: &worker::Worker,
-    endpoints: &[ep::Ep],
+    _worker: &worker::Worker,
+    _endpoints: &[ep::Ep],
     rank: usize,
     size: usize,
 ) -> Option<ucc::team::UccTeam> {
-    // 1. Initialize UCC library
-    let lib = match ucc::lib_init::UccLib::init() {
-        Ok(lib) => lib,
-        Err(e) => {
-            eprintln!("[osu] UCC library init failed: {} (falling back to UCX collectives)", e);
-            return None;
-        }
-    };
-    eprintln!("[osu] UCC library initialized");
-
-    // 2. Build UCC context params with OOB callbacks
-    let mut ctx_params = ucc::context::UccContextParams::default();
-    let inner = ctx_params.inner_mut();
-
-    // Set OOB callbacks
-    inner.oob.allgather = Some(ucc_oob_allgather);
-    inner.oob.req_test = Some(ucc_oob_req_test);
-    inner.oob.req_free = Some(ucc_oob_req_free);
-    // coll_info carries a pointer to our OOB info (endpoints + worker as raw pointers)
-    // We'll use a simpler approach: store rank/size in the callback via static or
-    // pass a pointer to a struct. Since UCC calls the callback with allgather_info,
-    // we need to set coll_info to something the callback can use.
-    //
-    // The allgather_info parameter in the callback is actually the coll_info pointer
-    // we set here. We need to pass the endpoints+worker somehow.
-    // Strategy: use a thread-local or static to hold references during init.
-    // Better: we pass a raw pointer to a small struct that lives long enough.
-    //
-    // Actually, the simplest approach: we store the worker and endpoints in a
-    // boxed struct and pass it as coll_info. The callback will cast it back.
-    // But the worker and endpoints are on the stack of init_ucc's caller...
-    //
-    // Clean approach: use a static Mutex<RefCell<...>> or just pass the info
-    // through the callback's allgather_info. UCC passes coll_info as allgather_info.
-    // We need the worker and endpoints to be accessible.
-    //
-    // The trick: we'll use a static variable to temporarily hold references.
-    // This is safe because UCC init is synchronous and single-threaded.
-    OOB_STATE.with(|state| {
-        let mut s = state.borrow_mut();
-        s.worker = worker as *const worker::Worker;
-        s.endpoints_ptr = endpoints.as_ptr();
-        s.endpoints_len = endpoints.len();
-        s.rank = rank;
-    });
-
-    inner.oob.coll_info = std::ptr::null_mut(); // we use static state instead
-    inner.oob.n_oob_eps = size as u32;
-    inner.oob.oob_ep = rank as u32;
-
-    // Set the OOB field in the mask
-    inner.mask |= ucc::ucc_context_params_field_UCC_CONTEXT_PARAM_FIELD_OOB as u64;
-
-    // 3. Create UCC context
-    let ucc_context = match ucc::context::UccContext::with_params(lib, ctx_params) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("[osu] UCC context creation failed: {} (falling back to UCX collectives)", e);
-            return None;
-        }
-    };
-    eprintln!("[osu] UCC context created");
-
-    // 4. Create UCC team with OOB callbacks explicitly set on team params.
-    //
-    // ucc_team_create_post internally calls the OOB allgather callback again.
-    // The default UccTeamParams has oob callbacks set to None, so we must
-    // provide them explicitly — context-level OOB settings don't propagate
-    // to team creation.
-    //
-    // Additionally, the ucc_team_create_test loop in the ucc-rs bindings
-    // spins without calling worker.progress(), which means the UCX tag
-    // operations posted by our OOB callback never complete. We work around
-    // this by wrapping team creation in a std::panic::catch_unwind +
-    // timeout so a crash or hang doesn't bring down the whole process.
-    let team = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut team_params = ucc::team::UccTeamParams::default();
-        team_params.with_ep(rank as u64);
-        team_params.with_size(size as u64);
-
-        // Set OOB callbacks on the team params explicitly
-        let inner = team_params.inner_mut();
-        inner.oob.allgather = Some(ucc_oob_allgather);
-        inner.oob.req_test = Some(ucc_oob_req_test);
-        inner.oob.req_free = Some(ucc_oob_req_free);
-        inner.oob.coll_info = std::ptr::null_mut();
-        inner.oob.n_oob_eps = size as u32;
-        inner.oob.oob_ep = rank as u32;
-        inner.mask |= ucc::ucc_team_params_field_UCC_TEAM_PARAM_FIELD_OOB as u64;
-
-        ucc::team::UccTeam::with_params(ucc_context, team_params)
-    }));
-
-    match team {
-        Ok(Ok(t)) => {
-            eprintln!("[osu] UCC team created (rank={}, size={})", rank, size);
-            Some(t)
-        }
-        Ok(Err(e)) => {
-            eprintln!(
-                "[osu] UCC team creation failed: {} (falling back to UCX collectives)",
-                e
-            );
-            None
-        }
-        Err(_) => {
-            eprintln!(
-                "[osu] UCC team creation panicked (falling back to UCX collectives)"
-            );
-            None
-        }
-    }
+    eprintln!(
+        "[osu] UCC team creation disabled (segfault workaround) — rank={}, size={}",
+        rank, size
+    );
+    None
 }
 
 // ── Thread-local state for OOB callbacks ──

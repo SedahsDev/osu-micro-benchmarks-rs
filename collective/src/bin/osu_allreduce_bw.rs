@@ -1,14 +1,14 @@
-//! OSU MPI Allreduce Latency Test (v7.5.2)
+//! OSU MPI Allreduce Bandwidth Test
 //!
-//! Measures allreduce latency using UCC allreduce (with UCX fallback).
+//! Measures allreduce bandwidth using UCX tag-matching fallback.
 //!
 //! Requires at least 2 processes. Runs allreduce with MPI_SUM for each
-//! message size from min to max, reporting min/avg/max latency per size.
+//! message size from min to max, reporting bandwidth in MB/s.
 //!
 //! # Usage
 //!
 //! ```bash
-//! prterun -np 2 ./target/release/osu_allreduce
+//! prterun -np 2 ./target/release/osu_allreduce_bw
 //! ```
 
 use osu_common::cli::CliArgs;
@@ -17,9 +17,8 @@ use osu_common::runtime::OsUContext;
 use osu_common::timing::Wtime;
 use std::io;
 use std::process;
-use ucc::collective::{DataType, ReductionOp};
 
-/// Run the allreduce latency benchmark.
+/// Run the allreduce bandwidth benchmark.
 fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
     let rank = ctx.rank();
     let size = ctx.size();
@@ -49,65 +48,43 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
         // Warmup iterations
         for _ in 0..skip {
-            allreduce_blocking(ctx, send_slice, recv_slice, msg_size);
+            allreduce_ucx_fallback(ctx, send_slice, recv_slice, msg_size);
             ctx.barrier();
         }
 
         let mut timer: f64 = 0.0;
 
         // Timed iterations
-        for i in 0..iterations {
+        for _ in 0..iterations {
             let t_start = Wtime::new();
-            allreduce_blocking(ctx, send_slice, recv_slice, msg_size);
+            allreduce_ucx_fallback(ctx, send_slice, recv_slice, msg_size);
             let elapsed_us = t_start.elapsed_us();
             // Barrier after each iteration to synchronize
             ctx.barrier();
 
-            if i >= 0 {
-                timer += elapsed_us;
-            }
+            timer += elapsed_us;
         }
 
-        let latency = timer / iterations as f64;
+        // Calculate bandwidth: msg_size bytes per iteration, timer in microseconds
+        // Bandwidth (MB/s) = msg_size * iterations / timer
+        let bandwidth = (msg_size as f64 * iterations as f64) / timer;
 
         // Reduce to get min/max/avg across all ranks
-        let min_time = ctx.allreduce_min_f64(latency);
-        let max_time = ctx.allreduce_max_f64(latency);
-        let sum_time = ctx.allreduce_sum_f64(latency);
-        let avg_time = sum_time / size as f64;
+        let min_bw = ctx.allreduce_min_f64(bandwidth);
+        let max_bw = ctx.allreduce_max_f64(bandwidth);
+        let sum_bw = ctx.allreduce_sum_f64(bandwidth);
+        let avg_bw = sum_bw / size as f64;
 
         if rank == 0 {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            output::print_latency_row(&mut out, msg_size, avg_time, min_time, max_time);
+            output::print_bandwidth_row(&mut out, msg_size, avg_bw, min_bw, max_bw);
             output::print_newline(&mut out);
         }
     }
 }
 
-/// Perform a blocking allreduce using UCC if available, otherwise UCX fallback.
-fn allreduce_blocking(ctx: &OsUContext, sendbuf: &mut [u8], recvbuf: &mut [u8], msg_size: usize) {
-    if let Some(team) = ctx.ucc_team() {
-        // Use UCC allreduce with CHAR datatype
-        let mut req = match team.allreduce(sendbuf, DataType::Uchar, ReductionOp::Sum) {
-            Ok(req) => req,
-            Err(_) => {
-                // UCC failed, fall back to UCX
-                allreduce_ucx_fallback(ctx, sendbuf, recvbuf, msg_size);
-                return;
-            }
-        };
-        while !req.test().unwrap_or(false) {
-            ctx.progress();
-        }
-        // UCC allreduce writes to the same buffer (in-place), copy to recvbuf
-        recvbuf.copy_from_slice(sendbuf);
-    } else {
-        allreduce_ucx_fallback(ctx, sendbuf, recvbuf, msg_size);
-    }
-}
-
-/// UCX-based allreduce fallback using all-gather + local sum.
+/// UCX-based allreduce using all-gather + local sum.
 fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
     let rank = ctx.rank();
     let size = ctx.size();
@@ -118,14 +95,12 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
     }
 
     let tag_param = ucx_sys::RequestParamBuilder::new().no_imm_cmpl().build();
-    const ALLREDUCE_TAG: u64 = 0xABCDEF00;
+    const ALLREDUCE_TAG: u64 = 0xBADDEF00;
     const TAG_MASK: u64 = u64::MAX;
 
-    // Gather all data
     let total_size = msg_size * size;
     let mut gathered = vec![0u8; total_size];
 
-    // Place our own data
     let my_offset = rank * msg_size;
     gathered[my_offset..my_offset + msg_size].copy_from_slice(sendbuf);
 
@@ -134,7 +109,7 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
         if peer != rank {
             ctx.endpoint(peer)
                 .tag_send(sendbuf, ALLREDUCE_TAG, &tag_param)
-                .expect("allreduce send");
+                .expect("allreduce bw send");
         }
     }
 
@@ -142,10 +117,11 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
     let mut recv_buf = vec![0u8; msg_size];
     for peer in 0..size {
         if peer != rank {
-            let req = ctx.worker()
+            let req = ctx
+                .worker()
                 .tag_recv(&mut recv_buf, ALLREDUCE_TAG, TAG_MASK, &tag_param)
-                .expect("allreduce recv")
-                .expect("allreduce recv request");
+                .expect("allreduce bw recv")
+                .expect("allreduce bw recv request");
             while !req.check_finished().unwrap_or(false) {
                 ctx.progress();
             }
@@ -187,8 +163,8 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Allreduce", BenchmarkType::CollectiveLatency);
-        output::print_latency_header(&mut out);
+        output::print_header(&mut out, "Allreduce BW", BenchmarkType::CollectiveLatency);
+        output::print_bandwidth_header(&mut out);
     }
 
     run_benchmark(&ctx, &args);
