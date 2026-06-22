@@ -876,32 +876,51 @@ impl OsUContext {
             recvbuf[my_offset..my_offset + my_len].copy_from_slice(sendbuf);
         }
 
-        // Send our data to all peers
+        // Phase 1: post all recvs (into temp buffers)
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(size);
+        let mut temp_bufs: Vec<Vec<u8>> = Vec::with_capacity(size);
         for peer in 0..size {
-            if peer != rank {
-                let req = self.endpoint(peer).tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
-                if let Ok(Some(mut req)) = req {
-                    while !req.check_finished().unwrap_or(false) {
-                        self.progress();
-                    }
+            if peer == rank {
+                recv_reqs.push(None);
+                temp_bufs.push(Vec::new());
+                continue;
+            }
+            let len = counts[peer];
+            let mut buf = vec![0u8; len];
+            let req = self.worker().tag_recv(&mut buf, ALLGATHERV_TAG, TAG_MASK, &tag_param);
+            temp_bufs.push(buf);
+            match req {
+                Ok(r) => recv_reqs.push(r),
+                _ => recv_reqs.push(None),
+            }
+        }
+
+        // Phase 2: send our data to all peers
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            let req = self.endpoint(peer).tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
+            if let Ok(Some(mut req)) = req {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
                 }
             }
         }
 
-        // Receive from all peers
+        // Phase 3: wait for all recvs and copy to recvbuf
         for peer in 0..size {
-            if peer != rank {
+            if peer == rank {
+                continue;
+            }
+            if let Some(mut req) = recv_reqs[peer].take() {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
                 let offset = displs[peer];
                 let len = counts[peer];
-                let mut recv_buf = vec![0u8; len];
-                let req = self.worker().tag_recv(&mut recv_buf, ALLGATHERV_TAG, TAG_MASK, &tag_param);
-                if let Ok(Some(mut req)) = req {
-                    while !req.check_finished().unwrap_or(false) {
-                        self.progress();
-                    }
-                    if offset + len <= recvbuf.len() {
-                        recvbuf[offset..offset + len].copy_from_slice(&recv_buf);
-                    }
+                if offset + len <= recvbuf.len() {
+                    recvbuf[offset..offset + len].copy_from_slice(&temp_bufs[peer]);
                 }
             }
         }
@@ -940,13 +959,26 @@ impl OsUContext {
         // Place our own data
         gathered[rank * total..(rank + 1) * total].copy_from_slice(sendbuf);
 
-        // Post recvs from all peers
+        // Phase 1a: post recvs from all peers (into gathered slots)
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(size);
+        for peer in 0..size {
+            if peer == rank {
+                recv_reqs.push(None);
+                continue;
+            }
+            let dst = &mut gathered[peer * total..(peer + 1) * total];
+            match self.worker().tag_recv(dst, REDUCESCATTER_TAG, TAG_MASK, &tag_param) {
+                Ok(r) => recv_reqs.push(r),
+                _ => recv_reqs.push(None),
+            }
+        }
+
+        // Phase 1b: send our data to all
         for peer in 0..size {
             if peer == rank {
                 continue;
             }
-            let dst = &mut gathered[peer * total..(peer + 1) * total];
-            let req = self.worker().tag_recv(dst, REDUCESCATTER_TAG, TAG_MASK, &tag_param);
+            let req = self.endpoint(peer).tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
@@ -954,14 +986,14 @@ impl OsUContext {
             }
         }
 
-        // Phase 2: send our data to all
+        // Phase 1c: wait for all recvs
         for peer in 0..size {
-            if peer != rank {
-                let req = self.endpoint(peer).tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
-                if let Ok(Some(mut req)) = req {
-                    while !req.check_finished().unwrap_or(false) {
-                        self.progress();
-                    }
+            if peer == rank {
+                continue;
+            }
+            if let Some(mut req) = recv_reqs[peer].take() {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
                 }
             }
         }
