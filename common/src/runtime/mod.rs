@@ -23,6 +23,8 @@ mod collective_blocking;
 mod constants;
 mod context;
 mod helpers;
+mod non_blocking;
 mod ucc_oob;
 
 pub use context::OsUContext;
+pub use non_blocking::OsURequest;

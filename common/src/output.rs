@@ -151,6 +151,26 @@ pub fn print_nbc_header<W: Write>(writer: &mut W) {
     let _ = writer.flush();
 }
 
+/// Print a non-blocking collective data row.
+///
+/// Format: `<size>    <overlap>    <cpu>    <communication>    <wait>    <init>`
+pub fn print_nbc_row<W: Write>(
+    writer: &mut W,
+    size: usize,
+    overlap: f64,
+    cpu: f64,
+    communication: f64,
+    wait: f64,
+    init: f64,
+) {
+    let _ = write!(
+        writer,
+        "{:<10} {:>20.2} {:>20.2} {:>20.2} {:>20.2} {:>20.2}",
+        size, overlap, cpu, communication, wait, init
+    );
+    let _ = writer.flush();
+}
+
 /// Print startup test output.
 pub fn print_startup<W: Write>(writer: &mut W, label: &str, time_ms: f64) {
     let _ = writeln!(writer, "{:<30} {:>12.4} ms", label, time_ms);
