@@ -1,0 +1,10 @@
+[package]
+name = "osu-collective"
+version = "0.1.0"
+edition = "2024"
+description = "Collective benchmarks for OSU Micro-Benchmarks in Rust"
+
+[dependencies]
+osu-common = { path = "../common" }
+ucx-sys = { path = "../../ucx/bindings/rust" }
+ucc = { path = "../../ucc-rs" }

@@ -1,0 +1,9 @@
+[package]
+name = "osu-common"
+version = "0.1.0"
+edition = "2024"
+description = "Shared utilities for OSU Micro-Benchmarks in Rust"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"

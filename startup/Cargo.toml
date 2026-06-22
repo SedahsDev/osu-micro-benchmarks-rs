@@ -1,0 +1,8 @@
+[package]
+name = "osu-startup"
+version = "0.1.0"
+edition = "2024"
+description = "Startup benchmarks for OSU Micro-Benchmarks in Rust"
+
+[dependencies]
+osu-common = { path = "../common" }

@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "common",
+    "pt2pt",
+    "collective",
+    "congestion",
+    "startup",
+]
+resolver = "2"
