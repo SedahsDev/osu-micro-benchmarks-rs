@@ -284,6 +284,7 @@ dependencies = [
  "clap",
  "libc",
  "pmix",
+ "ucc",
  "ucx-sys",
 ]
 
