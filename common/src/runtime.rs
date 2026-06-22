@@ -730,6 +730,253 @@ impl OsUContext {
             }
         }
     }
+
+    /// Gatherv: all ranks send `msg_size` bytes to root; root receives into variable-count slots.
+    /// Root's recvbuf holds `counts.iter().sum()` bytes total. Each rank's data lands at offset `displs[rank]`.
+    pub fn gatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize], root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                let offset = displs[rank];
+                let len = counts[rank];
+                let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        if rank != root {
+            // Non-root: send to root
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const GATHERV_TAG: u64 = 0xBADC0DE6;
+            let req = self.endpoint(root).tag_send(sendbuf, GATHERV_TAG, &tag_param);
+            if let Ok(Some(mut req)) = req {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+            }
+        } else {
+            // Root: receive from all other ranks, place own data
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const GATHERV_TAG: u64 = 0xBADC0DE6;
+            const TAG_MASK: u64 = u64::MAX;
+
+            // Place our own data
+            let my_offset = displs[rank];
+            let my_len = counts[rank];
+            if my_offset + my_len <= recvbuf.len() {
+                recvbuf[my_offset..my_offset + my_len].copy_from_slice(sendbuf);
+            }
+
+            // Receive from each peer
+            for peer in 0..size {
+                if peer == rank {
+                    continue;
+                }
+                let offset = displs[peer];
+                let len = counts[peer];
+                let mut recv_buf = vec![0u8; len];
+                let req = self.worker().tag_recv(&mut recv_buf, GATHERV_TAG, TAG_MASK, &tag_param);
+                if let Ok(Some(mut req)) = req {
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                    if offset + len <= recvbuf.len() {
+                        recvbuf[offset..offset + len].copy_from_slice(&recv_buf);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scatterv: root sends variable-count data; each rank receives `counts[rank]` bytes from offset `displs[rank]` in root's sendbuf.
+    pub fn scatterv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize], root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                let offset = displs[rank];
+                let len = counts[rank];
+                let copy_len = len.min(sendbuf.len().saturating_sub(offset)).min(recvbuf.len());
+                recvbuf[..copy_len].copy_from_slice(&sendbuf[offset..offset + copy_len]);
+            }
+            return;
+        }
+
+        if rank == root {
+            // Root: send to all peers, place own data
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const SCATTERV_TAG: u64 = 0xBADC0DE7;
+
+            // Place our own data
+            let my_offset = displs[rank];
+            let my_len = counts[rank];
+            if my_offset + my_len <= sendbuf.len() && my_len <= recvbuf.len() {
+                recvbuf[..my_len].copy_from_slice(&sendbuf[my_offset..my_offset + my_len]);
+            }
+
+            // Send to each peer
+            for peer in 0..size {
+                if peer == rank {
+                    continue;
+                }
+                let offset = displs[peer];
+                let len = counts[peer];
+                if offset + len <= sendbuf.len() {
+                    let req = self.endpoint(peer).tag_send(&sendbuf[offset..offset + len], SCATTERV_TAG, &tag_param);
+                    if let Ok(Some(mut req)) = req {
+                        while !req.check_finished().unwrap_or(false) {
+                            self.progress();
+                        }
+                    }
+                }
+            }
+        } else {
+            // Non-root: receive from root
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const SCATTERV_TAG: u64 = 0xBADC0DE7;
+            const TAG_MASK: u64 = u64::MAX;
+
+            let req = self.worker().tag_recv(recvbuf, SCATTERV_TAG, TAG_MASK, &tag_param);
+            if let Ok(Some(mut req)) = req {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+            }
+        }
+    }
+
+    /// Allgatherv: all ranks send `msg_size` bytes; every rank receives into variable-count slots.
+    /// Each rank's data lands at offset `displs[rank]` with length `counts[rank]`.
+    pub fn allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize]) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                let offset = displs[rank];
+                let len = counts[rank];
+                let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const ALLGATHERV_TAG: u64 = 0xBADC0DE8;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Place our own data
+        let my_offset = displs[rank];
+        let my_len = counts[rank];
+        if my_offset + my_len <= recvbuf.len() {
+            recvbuf[my_offset..my_offset + my_len].copy_from_slice(sendbuf);
+        }
+
+        // Send our data to all peers
+        for peer in 0..size {
+            if peer != rank {
+                let req = self.endpoint(peer).tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
+                if let Ok(Some(mut req)) = req {
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                }
+            }
+        }
+
+        // Receive from all peers
+        for peer in 0..size {
+            if peer != rank {
+                let offset = displs[peer];
+                let len = counts[peer];
+                let mut recv_buf = vec![0u8; len];
+                let req = self.worker().tag_recv(&mut recv_buf, ALLGATHERV_TAG, TAG_MASK, &tag_param);
+                if let Ok(Some(mut req)) = req {
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                    if offset + len <= recvbuf.len() {
+                        recvbuf[offset..offset + len].copy_from_slice(&recv_buf);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reduce-scatter: all ranks send `total` bytes; each rank receives `counts[rank]` bytes.
+    /// Each element position is summed across all ranks, result goes to rank's slot.
+    pub fn reducescatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize]) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                let len = counts[rank].min(sendbuf.len()).min(recvbuf.len());
+                recvbuf[..len].copy_from_slice(&sendbuf[..len]);
+            }
+            return;
+        }
+
+        // Compute displs from counts
+        let mut displs: Vec<usize> = Vec::with_capacity(size);
+        let mut d = 0;
+        for &c in counts {
+            displs.push(d);
+            d += c;
+        }
+        let total = d;
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const REDUCESCATTER_TAG: u64 = 0xBADC0DE9;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Phase 1: all-to-all gather (need full data from everyone)
+        let mut gathered = vec![0u8; total * size]; // peer_data[peer * total .. (peer+1) * total]
+
+        // Place our own data
+        gathered[rank * total..(rank + 1) * total].copy_from_slice(sendbuf);
+
+        // Post recvs from all peers
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            let dst = &mut gathered[peer * total..(peer + 1) * total];
+            let req = self.worker().tag_recv(dst, REDUCESCATTER_TAG, TAG_MASK, &tag_param);
+            if let Ok(Some(mut req)) = req {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+            }
+        }
+
+        // Phase 2: send our data to all
+        for peer in 0..size {
+            if peer != rank {
+                let req = self.endpoint(peer).tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
+                if let Ok(Some(mut req)) = req {
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                }
+            }
+        }
+
+        // Phase 3: element-wise SUM across all peers for our slot
+        let my_offset = displs[rank];
+        let my_len = counts[rank];
+        for i in 0..my_len {
+            let mut sum: u64 = 0;
+            for peer in 0..size {
+                sum += gathered[peer * total + my_offset + i] as u64;
+            }
+            recvbuf[i] = (sum % 256) as u8;
+        }
+    }
 }
 
 /// Flush an endpoint by flushing the worker.
