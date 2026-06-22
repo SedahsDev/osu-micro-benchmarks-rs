@@ -428,6 +428,199 @@ impl OsUContext {
 
         gathered.iter().sum()
     }
+
+    /// Broadcast: root sends data to all other ranks (UCX tag-matching fallback).
+    ///
+    /// Root rank writes into `sendbuf`; all ranks receive into `recvbuf`.
+    pub fn bcast(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            recvbuf.copy_from_slice(sendbuf);
+            return;
+        }
+
+        if rank == root {
+            // Root sends to all peers
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const BCAST_TAG: u64 = 0xBADC0DE0;
+            for peer in 0..size {
+                if peer != rank {
+                    self.endpoint(peer)
+                        .tag_send(sendbuf, BCAST_TAG, &tag_param)
+                        .expect("bcast send");
+                }
+            }
+            recvbuf.copy_from_slice(sendbuf);
+        } else {
+            // Non-root receives from root
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const BCAST_TAG: u64 = 0xBADC0DE0;
+            const TAG_MASK: u64 = u64::MAX;
+            let req = self
+                .worker()
+                .tag_recv(recvbuf, BCAST_TAG, TAG_MASK, &tag_param)
+                .expect("bcast recv")
+                .expect("bcast recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+        }
+    }
+
+    /// Reduce: all ranks contribute, root gets the result (UCX tag-matching fallback).
+    ///
+    /// Each rank sends `sendbuf`; root receives into `recvbuf` with element-wise sum (u8).
+    pub fn reduce(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+        let msg_size = sendbuf.len();
+
+        if size <= 1 {
+            recvbuf.copy_from_slice(sendbuf);
+            return;
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const REDUCE_TAG: u64 = 0xBADC0DE1;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send our data to all peers (simplest approach for small groups)
+        for peer in 0..size {
+            if peer != rank {
+                self.endpoint(peer)
+                    .tag_send(sendbuf, REDUCE_TAG, &tag_param)
+                    .expect("reduce send");
+            }
+        }
+
+        // Everyone receives from all peers
+        let mut gathered = vec![0u8; msg_size * size];
+        let my_offset = rank * msg_size;
+        gathered[my_offset..my_offset + msg_size].copy_from_slice(sendbuf);
+
+        let mut recv_buf = vec![0u8; msg_size];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self.worker()
+                    .tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
+                    .expect("reduce recv")
+                    .expect("reduce recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                let peer_offset = peer * msg_size;
+                gathered[peer_offset..peer_offset + msg_size].copy_from_slice(&recv_buf);
+            }
+        }
+
+        // Only root does the reduction
+        if rank == root {
+            for i in 0..msg_size {
+                let sum: u16 = (0..size as usize)
+                    .map(|r| gathered[r * msg_size + i] as u16)
+                    .sum();
+                recvbuf[i] = (sum % 256) as u8;
+            }
+        }
+    }
+
+    /// Allgather: each rank sends its data, all ranks receive from all (UCX tag-matching fallback).
+    ///
+    /// `sendbuf` is per-rank data; `recvbuf` has capacity `msg_size * size`.
+    pub fn allgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            recvbuf[..msg_size].copy_from_slice(sendbuf);
+            return;
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const ALLGATHER_TAG: u64 = 0xBADC0DE2;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Place our own data
+        let my_offset = rank * msg_size;
+        recvbuf[my_offset..my_offset + msg_size].copy_from_slice(sendbuf);
+
+        // Send our data to all peers
+        for peer in 0..size {
+            if peer != rank {
+                self.endpoint(peer)
+                    .tag_send(sendbuf, ALLGATHER_TAG, &tag_param)
+                    .expect("allgather send");
+            }
+        }
+
+        // Receive from all peers
+        let mut recv_buf = vec![0u8; msg_size];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self.worker()
+                    .tag_recv(&mut recv_buf, ALLGATHER_TAG, TAG_MASK, &tag_param)
+                    .expect("allgather recv")
+                    .expect("allgather recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                let peer_offset = peer * msg_size;
+                recvbuf[peer_offset..peer_offset + msg_size].copy_from_slice(&recv_buf);
+            }
+        }
+    }
+
+    /// Alltoall: each rank sends a piece to every peer, receives from every peer (UCX tag-matching fallback).
+    ///
+    /// `sendbuf` has `msg_size * size` bytes; piece for peer `p` is at offset `p * msg_size`.
+    /// `recvbuf` has `msg_size * size` bytes; piece from peer `p` goes to offset `p * msg_size`.
+    pub fn alltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            recvbuf.copy_from_slice(sendbuf);
+            return;
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const ALLTOALL_TAG: u64 = 0xBADC0DE3;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send our piece for each peer
+        for peer in 0..size {
+            if peer != rank {
+                let piece = &sendbuf[peer * msg_size..(peer + 1) * msg_size];
+                self.endpoint(peer)
+                    .tag_send(piece, ALLTOALL_TAG, &tag_param)
+                    .expect("alltoall send");
+            }
+        }
+
+        // Receive piece from each peer
+        let mut recv_buf = vec![0u8; msg_size];
+        for peer in 0..size {
+            if peer != rank {
+                let req = self.worker()
+                    .tag_recv(&mut recv_buf, ALLTOALL_TAG, TAG_MASK, &tag_param)
+                    .expect("alltoall recv")
+                    .expect("alltoall recv request");
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                let peer_offset = peer * msg_size;
+                recvbuf[peer_offset..peer_offset + msg_size].copy_from_slice(&recv_buf);
+            } else {
+                // Our own piece
+                let my_offset = rank * msg_size;
+                recvbuf[my_offset..my_offset + msg_size].copy_from_slice(
+                    &sendbuf[my_offset..my_offset + msg_size],
+                );
+            }
+        }
+    }
 }
 
 /// Flush an endpoint by flushing the worker.
