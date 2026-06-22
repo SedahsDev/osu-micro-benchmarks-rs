@@ -76,7 +76,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
+ "shlex",
+ "syn",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.2",
  "shlex",
  "syn",
 ]
@@ -158,6 +178,12 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
+
+[[package]]
+name = "cstring-array"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986baa59012208993d2ee19bf56be99f7a9a73da4b0b723e76ad73c7c4c465e1"
 
 [[package]]
 name = "either"
@@ -257,6 +283,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "libc",
+ "pmix",
+ "ucx-sys",
 ]
 
 [[package]]
@@ -280,6 +308,16 @@ name = "osu-startup"
 version = "0.1.0"
 dependencies = [
  "osu-common",
+]
+
+[[package]]
+name = "pmix"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.72.1",
+ "bitflags",
+ "cstring-array",
+ "libc",
 ]
 
 [[package]]
@@ -346,6 +384,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -372,7 +416,7 @@ dependencies = [
 name = "ucc"
 version = "0.1.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "libc",
 ]
 
@@ -380,7 +424,7 @@ dependencies = [
 name = "ucx-sys"
 version = "0.1.0"
 dependencies = [
- "bindgen",
+ "bindgen 0.70.1",
  "bitflags",
 ]
 

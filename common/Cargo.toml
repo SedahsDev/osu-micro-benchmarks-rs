@@ -7,3 +7,5 @@ description = "Shared utilities for OSU Micro-Benchmarks in Rust"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+pmix = { path = "/home/bzf/projects/pmix-rs" }
+ucx-sys = { path = "/home/bzf/projects/ucx/bindings/rust" }

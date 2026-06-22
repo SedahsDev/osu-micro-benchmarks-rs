@@ -13,8 +13,9 @@
 
 use osu_common::cli::{CliArgs, LARGE_MESSAGE_SIZE};
 use osu_common::output::{self, BenchmarkType};
+use osu_common::runtime::OsUContext;
 use osu_common::timing::{TimingResult, Wtime};
-use std::io::{self, Write};
+use std::io;
 use std::process;
 
 /// UCX tag used for all messages in this benchmark.
@@ -23,9 +24,9 @@ const TAG: u64 = 0x123456789ABCDEF0;
 const TAG_MASK: u64 = u64::MAX;
 
 /// Run the latency benchmark using UCX tag matching.
-fn run_ucx_benchmark(args: &CliArgs) {
-    let rank = osu_common::runtime::stub::get_rank();
-    let size = osu_common::runtime::stub::get_size();
+fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
+    let rank = ctx.rank();
+    let size = ctx.size();
 
     if size < 2 {
         eprintln!("Error: This test requires at least 2 processes.");
@@ -37,71 +38,80 @@ fn run_ucx_benchmark(args: &CliArgs) {
     }
 
     let partner = 1 - rank;
+    let ep = ctx.endpoint(partner);
+    let worker = ctx.worker();
 
-    // TODO: Initialize UCX context and worker
-    // let config = osu_common::runtime::RuntimeConfig {
-    //     num_procs: size,
-    //     rank,
-    //     transport: "tcp".to_string(),
-    //     gpu_enabled: false,
-    // };
-    // let handle = osu_common::runtime::ucx_init(&config);
+    // Build request params for tag send/recv
+    let tag_param = ucx_sys::RequestParamBuilder::new().no_imm_cmpl().build();
 
-    // TODO: Exchange addresses and create endpoints
-    // let my_addr = osu_common::runtime::ucx_pack_address(&handle);
-    // let remote_addr = if rank == 0 {
-    //     // Receive address from rank 1
-    //     let mut buf = vec![0u8; 4096];
-    //     osu_common::runtime::ucx_tag_recv(&handle, &mut buf, TAG, TAG_MASK);
-    //     buf
-    // } else {
-    //     // Send address to rank 0
-    //     osu_common::runtime::ucx_tag_send(&handle, &my_addr, TAG);
-    //     my_addr
-    // };
-    // let ep = osu_common::runtime::ucx_create_endpoint(&handle, &remote_addr);
+    // Barrier so both sides are ready
+    ctx.barrier();
 
-    // TODO: Run ping-pong latency test
-    // for msg_size in message_sizes(args) {
-    //     let iterations = args.get_iterations(msg_size);
-    //     let skip = args.get_skip(msg_size);
-    //
-    //     let mut buf = vec![0u8; msg_size];
-    //     let mut result = TimingResult::new();
-    //
-    //     // Skip warmup iterations
-    //     for _ in 0..skip {
-    //         if rank == 0 {
-    //             osu_common::runtime::ucx_tag_send(&ep, &buf, TAG);
-    //             osu_common::runtime::ucx_tag_recv(&handle, &mut buf, TAG, TAG_MASK);
-    //         } else {
-    //             osu_common::runtime::ucx_tag_recv(&handle, &mut buf, TAG, TAG_MASK);
-    //             osu_common::runtime::ucx_tag_send(&ep, &buf, TAG);
-    //         }
-    //     }
-    //
-    //     // Timed iterations
-    //     for _ in 0..iterations {
-    //         let start = Wtime::new();
-    //         if rank == 0 {
-    //             osu_common::runtime::ucx_tag_send(&ep, &buf, TAG);
-    //             osu_common::runtime::ucx_tag_recv(&handle, &mut buf, TAG, TAG_MASK);
-    //         } else {
-    //             osu_common::runtime::ucx_tag_recv(&handle, &mut buf, TAG, TAG_MASK);
-    //             osu_common::runtime::ucx_tag_send(&ep, &buf, TAG);
-    //         }
-    //         let elapsed = start.elapsed_us();
-    //         result.add(elapsed);
-    //     }
-    //
-    //     if rank == 0 {
-    //         output::print_latency_row(&mut io::stdout(), msg_size, result.avg_us, result.min_us, result.max_us);
-    //         output::print_newline(&mut io::stdout());
-    //     }
-    // }
+    for msg_size in message_sizes(args) {
+        let iterations = args.get_iterations(msg_size);
+        let skip = args.get_skip(msg_size);
 
-    // TODO: Finalize UCX
-    // osu_common::runtime::ucx_finalize(handle);
+        let mut buf = vec![0u8; msg_size];
+        let mut result = TimingResult::new();
+
+        // Skip warmup iterations
+        for _ in 0..skip {
+            if rank == 0 {
+                ep.tag_send(&buf, TAG, &tag_param).expect("tag_send");
+                ctx.progress();
+                let recv_req = worker
+                    .tag_recv(&mut buf, TAG, TAG_MASK, &tag_param)
+                    .expect("tag_recv")
+                    .expect("recv request");
+                while !recv_req.check_finished().unwrap_or(false) {
+                    ctx.progress();
+                }
+            } else {
+                let recv_req = worker
+                    .tag_recv(&mut buf, TAG, TAG_MASK, &tag_param)
+                    .expect("tag_recv")
+                    .expect("recv request");
+                while !recv_req.check_finished().unwrap_or(false) {
+                    ctx.progress();
+                }
+                ep.tag_send(&buf, TAG, &tag_param).expect("tag_send");
+            }
+        }
+
+        // Timed iterations
+        for _ in 0..iterations {
+            let start = Wtime::new();
+            if rank == 0 {
+                ep.tag_send(&buf, TAG, &tag_param).expect("tag_send");
+                ctx.progress();
+                let recv_req = worker
+                    .tag_recv(&mut buf, TAG, TAG_MASK, &tag_param)
+                    .expect("tag_recv")
+                    .expect("recv request");
+                while !recv_req.check_finished().unwrap_or(false) {
+                    ctx.progress();
+                }
+            } else {
+                let recv_req = worker
+                    .tag_recv(&mut buf, TAG, TAG_MASK, &tag_param)
+                    .expect("tag_recv")
+                    .expect("recv request");
+                while !recv_req.check_finished().unwrap_or(false) {
+                    ctx.progress();
+                }
+                ep.tag_send(&buf, TAG, &tag_param).expect("tag_send");
+            }
+            let elapsed = start.elapsed_us();
+            result.add(elapsed);
+        }
+
+        if rank == 0 {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            output::print_latency_row(&mut out, msg_size, result.avg_us, result.min_us, result.max_us);
+            output::print_newline(&mut out);
+        }
+    }
 }
 
 /// Generate message sizes from min to max using the given increment.
@@ -127,14 +137,18 @@ fn message_sizes(args: &CliArgs) -> Vec<usize> {
 fn main() {
     let args = CliArgs::parse();
 
+    // Create the unified runtime context
+    let ctx = OsUContext::init();
+
     // Print header (only rank 0)
-    let rank = osu_common::runtime::stub::get_rank();
-    if rank == 0 {
+    if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         output::print_header(&mut out, "Latency", BenchmarkType::Latency);
         output::print_latency_header(&mut out);
     }
 
-    run_ucx_benchmark(&args);
+    run_benchmark(&ctx, &args);
+
+    // ctx dropped here — finalizes UCC → UCX → PMIx in order
 }
