@@ -28,6 +28,8 @@ pub enum BenchmarkType {
     MbwMr,
     /// Collective latency test.
     CollectiveLatency,
+    /// Collective bandwidth test.
+    CollectiveBandwidth,
     /// Non-blocking collective test.
     NonBlockingCollective,
     /// Startup test.
@@ -46,6 +48,7 @@ pub fn print_header<W: Write>(writer: &mut W, name: &str, bench_type: BenchmarkT
         BenchmarkType::BiBandwidth => format!("OSU MPI Bidirectional Bandwidth Test (v{})", VERSION),
         BenchmarkType::MbwMr => format!("OSU MPI Multi-Buffer and Multi-Region Bandwidth Test (v{})", VERSION),
         BenchmarkType::CollectiveLatency => format!("OSU MPI Collective Latency Test (v{})", VERSION),
+        BenchmarkType::CollectiveBandwidth => format!("OSU MPI Collective Bandwidth Test (v{})", VERSION),
         BenchmarkType::NonBlockingCollective => format!("OSU MPI Non-Blocking Collective Latency Test (v{})", VERSION),
         BenchmarkType::Startup => format!("OSU MPI Startup Test (v{})", VERSION),
         BenchmarkType::CongestionBw => format!("OSU MPI Congestion Bandwidth Test (v{})", VERSION),

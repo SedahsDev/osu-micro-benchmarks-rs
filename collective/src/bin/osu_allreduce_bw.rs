@@ -163,7 +163,7 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Allreduce BW", BenchmarkType::CollectiveLatency);
+        output::print_header(&mut out, "Allreduce BW", BenchmarkType::CollectiveBandwidth);
         output::print_bandwidth_header(&mut out);
     }
 
