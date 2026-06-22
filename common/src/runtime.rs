@@ -926,6 +926,178 @@ impl OsUContext {
         }
     }
 
+    /// Alltoallv: each rank sends variable-size pieces to every peer, receives variable-size pieces from every peer.
+    ///
+    /// `sendbuf` layout: piece for peer `p` starts at `sdispls[p]` with length `sendcounts[p]`.
+    /// `recvbuf` layout: piece from peer `p` goes to offset `rdispls[p]` with length `recvcounts[p]`.
+    pub fn alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], sendcounts: &[usize], sdispls: &[usize], recvcounts: &[usize], rdispls: &[usize]) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            // Self: copy each piece from sendbuf to recvbuf
+            for p in 0..size {
+                let src_off = sdispls[p];
+                let dst_off = rdispls[p];
+                let len = sendcounts[p];
+                if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
+                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                }
+            }
+            return;
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const ALLTOALLV_TAG: u64 = 0xBADC0DEA;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Phase 1: post recvs from all peers
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(size);
+        let mut temp_bufs: Vec<Vec<u8>> = Vec::with_capacity(size);
+        for peer in 0..size {
+            if peer == rank {
+                // Self piece — copy directly
+                let src_off = sdispls[peer];
+                let dst_off = rdispls[peer];
+                let len = sendcounts[peer];
+                if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
+                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                }
+                recv_reqs.push(None);
+                temp_bufs.push(Vec::new());
+                continue;
+            }
+            let len = recvcounts[peer];
+            let mut buf = vec![0u8; len];
+            match self.worker().tag_recv(&mut buf, ALLTOALLV_TAG, TAG_MASK, &tag_param) {
+                Ok(r) => {
+                    temp_bufs.push(buf);
+                    recv_reqs.push(r);
+                }
+                _ => {
+                    temp_bufs.push(buf);
+                    recv_reqs.push(None);
+                }
+            }
+        }
+
+        // Phase 2: send our piece to each peer
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            let src_off = sdispls[peer];
+            let len = sendcounts[peer];
+            if src_off + len <= sendbuf.len() {
+                let req = self.endpoint(peer).tag_send(&sendbuf[src_off..src_off + len], ALLTOALLV_TAG, &tag_param);
+                if let Ok(Some(mut req)) = req {
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                }
+            }
+        }
+
+        // Phase 3: wait for all recvs and copy to recvbuf
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            if let Some(mut req) = recv_reqs[peer].take() {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+                let dst_off = rdispls[peer];
+                let len = recvcounts[peer];
+                if dst_off + len <= recvbuf.len() {
+                    recvbuf[dst_off..dst_off + len].copy_from_slice(&temp_bufs[peer]);
+                }
+            }
+        }
+    }
+
+    /// Alltoallw: like alltoallv but with per-peer datatypes.
+    /// Since we only use bytes, this is identical to alltoallv.
+    pub fn alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], sendcounts: &[usize], sdispls: &[usize], recvcounts: &[usize], rdispls: &[usize]) {
+        self.alltoallv(sendbuf, recvbuf, sendcounts, sdispls, recvcounts, rdispls)
+    }
+
+    /// Reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs` bytes.
+    /// Element-wise SUM across all ranks, result goes to rank's uniform block.
+    pub fn reduce_scatter_block(&self, sendbuf: &[u8], recvbuf: &mut [u8], elemcount: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let len = elemcount.min(sendbuf.len()).min(recvbuf.len());
+            if len > 0 {
+                recvbuf[..len].copy_from_slice(&sendbuf[..len]);
+            }
+            return;
+        }
+
+        let per_rank = elemcount / size;
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const REDUCE_SCATTER_BLOCK_TAG: u64 = 0xBADC0DEB;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Phase 1: all-to-all gather (need full data from everyone)
+        let mut gathered = vec![0u8; elemcount * size];
+
+        // Place our own data
+        gathered[rank * elemcount..(rank + 1) * elemcount].copy_from_slice(sendbuf);
+
+        // Phase 1a: post recvs from all peers
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(size);
+        for peer in 0..size {
+            if peer == rank {
+                recv_reqs.push(None);
+                continue;
+            }
+            let dst = &mut gathered[peer * elemcount..(peer + 1) * elemcount];
+            match self.worker().tag_recv(dst, REDUCE_SCATTER_BLOCK_TAG, TAG_MASK, &tag_param) {
+                Ok(r) => recv_reqs.push(r),
+                _ => recv_reqs.push(None),
+            }
+        }
+
+        // Phase 1b: send our data to all
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            let req = self.endpoint(peer).tag_send(sendbuf, REDUCE_SCATTER_BLOCK_TAG, &tag_param);
+            if let Ok(Some(mut req)) = req {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+            }
+        }
+
+        // Phase 1c: wait for all recvs
+        for peer in 0..size {
+            if peer == rank {
+                continue;
+            }
+            if let Some(mut req) = recv_reqs[peer].take() {
+                while !req.check_finished().unwrap_or(false) {
+                    self.progress();
+                }
+            }
+        }
+
+        // Phase 2: element-wise SUM across all peers for our block
+        let my_offset = rank * per_rank;
+        for i in 0..per_rank {
+            let mut sum: u64 = 0;
+            for peer in 0..size {
+                sum += gathered[peer * elemcount + my_offset + i] as u64;
+            }
+            recvbuf[i] = (sum % 256) as u8;
+        }
+    }
+
     /// Reduce-scatter: all ranks send `total` bytes; each rank receives `counts[rank]` bytes.
     /// Each element position is summed across all ranks, result goes to rank's slot.
     pub fn reducescatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize]) {
