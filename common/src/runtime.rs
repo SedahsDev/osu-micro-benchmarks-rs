@@ -621,6 +621,115 @@ impl OsUContext {
             }
         }
     }
+
+    /// Gather: all ranks send `msg_size` bytes to root; root receives `msg_size * size` total.
+    ///
+    /// Each rank's data lands at offset `rank * msg_size` in the root's recvbuf.
+    /// Non-root ranks pass a zero-length recvbuf (they don't receive anything).
+    pub fn gather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                recvbuf[..sendbuf.len()].copy_from_slice(sendbuf);
+            }
+            return;
+        }
+
+        if rank != root {
+            // Non-root: just send to root
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const GATHER_TAG: u64 = 0xBADC0DE4;
+            self.endpoint(root)
+                .tag_send(sendbuf, GATHER_TAG, &tag_param)
+                .expect("gather send");
+        } else {
+            // Root: receive from all other ranks into recvbuf
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const GATHER_TAG: u64 = 0xBADC0DE4;
+            const TAG_MASK: u64 = u64::MAX;
+
+            // Place our own data first
+            let my_offset = rank * msg_size;
+            if my_offset + msg_size <= recvbuf.len() {
+                recvbuf[my_offset..my_offset + msg_size].copy_from_slice(sendbuf);
+            }
+
+            let mut recv_buf = vec![0u8; msg_size];
+            for peer in 0..size {
+                if peer != rank {
+                    let req = self
+                        .worker()
+                        .tag_recv(&mut recv_buf, GATHER_TAG, TAG_MASK, &tag_param)
+                        .expect("gather recv")
+                        .expect("gather recv request");
+                    while !req.check_finished().unwrap_or(false) {
+                        self.progress();
+                    }
+                    let peer_offset = peer * msg_size;
+                    if peer_offset + msg_size <= recvbuf.len() {
+                        recvbuf[peer_offset..peer_offset + msg_size]
+                            .copy_from_slice(&recv_buf);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scatter: root sends `msg_size * size` bytes (one chunk per rank); each rank receives `msg_size` bytes.
+    ///
+    /// Root's sendbuf contains `size` chunks of `msg_size` bytes each.
+    /// Each rank receives its chunk at offset `rank * msg_size` from the root's sendbuf.
+    pub fn scatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            if !sendbuf.is_empty() && !recvbuf.is_empty() {
+                let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
+                recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        if rank == root {
+            // Root: send each peer's chunk
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const SCATTER_TAG: u64 = 0xBADC0DE5;
+
+            // Place our own chunk
+            let my_offset = rank * msg_size;
+            if my_offset + msg_size <= sendbuf.len() && msg_size <= recvbuf.len() {
+                recvbuf[..msg_size].copy_from_slice(&sendbuf[my_offset..my_offset + msg_size]);
+            }
+
+            for peer in 0..size {
+                if peer != rank {
+                    let peer_offset = peer * msg_size;
+                    if peer_offset + msg_size <= sendbuf.len() {
+                        self.endpoint(peer)
+                            .tag_send(&sendbuf[peer_offset..peer_offset + msg_size], SCATTER_TAG, &tag_param)
+                            .expect("scatter send");
+                    }
+                }
+            }
+        } else {
+            // Non-root: receive from root
+            let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+            const SCATTER_TAG: u64 = 0xBADC0DE5;
+            const TAG_MASK: u64 = u64::MAX;
+
+            let req = self
+                .worker()
+                .tag_recv(recvbuf, SCATTER_TAG, TAG_MASK, &tag_param)
+                .expect("scatter recv")
+                .expect("scatter recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+        }
+    }
 }
 
 /// Flush an endpoint by flushing the worker.
