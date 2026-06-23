@@ -897,4 +897,235 @@ impl OsUContext {
             remaining,
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Neighbor collectives (ring topology: each rank connects to prev/next)
+    // -----------------------------------------------------------------------
+
+    /// Compute ring neighbors for this rank. Returns (sources, destinations).
+    fn neighbor_ring(&self) -> (Vec<usize>, Vec<usize>) {
+        let rank = self.rank;
+        let size = self.size;
+        if size <= 2 {
+            return (vec![1 ^ rank], vec![1 ^ rank]);
+        }
+        let prev = (rank.wrapping_sub(1)).rem_euclid(size);
+        let next = (rank + 1).rem_euclid(size);
+        (vec![prev], vec![next])
+    }
+
+    /// Non-blocking neighbor allgather (ring topology).
+    /// Each rank sends to and receives from its neighbors only.
+    pub fn ineighbor_allgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
+            recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const NHBR_ALLGATHER_TAG: u64 = 0x01010001;
+        const TAG_MASK: u64 = u64::MAX;
+
+        let (sources, destinations) = self.neighbor_ring();
+        let num_neighbors = sources.len();
+
+        // Copy own contribution into recvbuf
+        let my_offset = rank * msg_size;
+        if my_offset + msg_size <= recvbuf.len() {
+            recvbuf[my_offset..my_offset + msg_size].copy_from_slice(&sendbuf[..msg_size.min(sendbuf.len())]);
+        }
+
+        // Post sends to destinations
+        for &dst in &destinations {
+            self.endpoint(dst)
+                .tag_send(&sendbuf[..msg_size.min(sendbuf.len())], NHBR_ALLGATHER_TAG, &tag_param)
+                .expect("ineighbor_allgather send");
+        }
+
+        // Post receives from sources
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
+        for &src in &sources {
+            let mut recv_buf = vec![0u8; msg_size];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, NHBR_ALLGATHER_TAG, TAG_MASK, &tag_param)
+                .expect("ineighbor_allgather recv")
+                .expect("ineighbor_allgather recv request");
+            recv_reqs.push(Some(req));
+        }
+
+        OsURequest {
+            recv_reqs,
+            worker: &self.worker as *const _,
+            remaining: num_neighbors,
+        }
+    }
+
+    /// Non-blocking neighbor allgatherv (ring topology).
+    pub fn ineighbor_allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize]) -> OsURequest {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let offset = displs.get(rank).copied().unwrap_or(0);
+            let len = counts.get(rank).copied().unwrap_or(0);
+            let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+            if copy_len > 0 {
+                recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const NHBR_ALLGATHERV_TAG: u64 = 0x01010002;
+        const TAG_MASK: u64 = u64::MAX;
+
+        let (sources, destinations) = self.neighbor_ring();
+        let num_neighbors = sources.len();
+
+        // Copy own contribution
+        let my_offset = displs.get(rank).copied().unwrap_or(0);
+        let my_len = counts.get(rank).copied().unwrap_or(0);
+        if my_offset + my_len <= recvbuf.len() {
+            recvbuf[my_offset..my_offset + my_len].copy_from_slice(&sendbuf[..my_len.min(sendbuf.len())]);
+        }
+
+        // Post sends to destinations
+        for &dst in &destinations {
+            let len = counts.get(rank).copied().unwrap_or(0);
+            self.endpoint(dst)
+                .tag_send(&sendbuf[..len.min(sendbuf.len())], NHBR_ALLGATHERV_TAG, &tag_param)
+                .expect("ineighbor_allgatherv send");
+        }
+
+        // Post receives from sources
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
+        for &src in &sources {
+            let len = counts.get(src).copied().unwrap_or(0);
+            let mut recv_buf = vec![0u8; len];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, NHBR_ALLGATHERV_TAG, TAG_MASK, &tag_param)
+                .expect("ineighbor_allgatherv recv")
+                .expect("ineighbor_allgatherv recv request");
+            recv_reqs.push(Some(req));
+        }
+
+        OsURequest {
+            recv_reqs,
+            worker: &self.worker as *const _,
+            remaining: num_neighbors,
+        }
+    }
+
+    /// Non-blocking neighbor alltoall (ring topology).
+    pub fn ineighbor_alltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
+            recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const NHBR_ALLTOALL_TAG: u64 = 0x01010003;
+        const TAG_MASK: u64 = u64::MAX;
+
+        let (sources, destinations) = self.neighbor_ring();
+        let num_neighbors = sources.len();
+
+        // Post sends to destinations
+        for &dst in &destinations {
+            let offset = dst * msg_size;
+            let end = (offset + msg_size).min(sendbuf.len());
+            if offset < sendbuf.len() {
+                self.endpoint(dst)
+                    .tag_send(&sendbuf[offset..end], NHBR_ALLTOALL_TAG, &tag_param)
+                    .expect("ineighbor_alltoall send");
+            }
+        }
+
+        // Post receives from sources
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
+        for &src in &sources {
+            let mut recv_buf = vec![0u8; msg_size];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, NHBR_ALLTOALL_TAG, TAG_MASK, &tag_param)
+                .expect("ineighbor_alltoall recv")
+                .expect("ineighbor_alltoall recv request");
+            recv_reqs.push(Some(req));
+        }
+
+        OsURequest {
+            recv_reqs,
+            worker: &self.worker as *const _,
+            remaining: num_neighbors,
+        }
+    }
+
+    /// Non-blocking neighbor alltoallv (ring topology).
+    pub fn ineighbor_alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            for p in 0..size {
+                let src_off = send_displs.get(p).copied().unwrap_or(0);
+                let dst_off = recv_displs.get(p).copied().unwrap_or(0);
+                let len = send_counts.get(p).copied().unwrap_or(0);
+                let copy = len.min(sendbuf.len().saturating_sub(src_off)).min(recvbuf.len().saturating_sub(dst_off));
+                if copy > 0 {
+                    recvbuf[dst_off..dst_off + copy].copy_from_slice(&sendbuf[src_off..src_off + copy]);
+                }
+            }
+            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+        }
+
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const NHBR_ALLTOALLV_TAG: u64 = 0x01010004;
+        const TAG_MASK: u64 = u64::MAX;
+
+        let (sources, destinations) = self.neighbor_ring();
+        let num_neighbors = sources.len();
+
+        // Post sends to destinations
+        for &dst in &destinations {
+            let src_off = send_displs.get(dst).copied().unwrap_or(0);
+            let len = send_counts.get(dst).copied().unwrap_or(0);
+            let end = (src_off + len).min(sendbuf.len());
+            if src_off < sendbuf.len() {
+                self.endpoint(dst)
+                    .tag_send(&sendbuf[src_off..end], NHBR_ALLTOALLV_TAG, &tag_param)
+                    .expect("ineighbor_alltoallv send");
+            }
+        }
+
+        // Post receives from sources
+        let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
+        for &src in &sources {
+            let len = recv_counts.get(src).copied().unwrap_or(0);
+            let mut recv_buf = vec![0u8; len];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, NHBR_ALLTOALLV_TAG, TAG_MASK, &tag_param)
+                .expect("ineighbor_alltoallv recv")
+                .expect("ineighbor_alltoallv recv request");
+            recv_reqs.push(Some(req));
+        }
+
+        OsURequest {
+            recv_reqs,
+            worker: &self.worker as *const _,
+            remaining: num_neighbors,
+        }
+    }
+
+    /// Non-blocking neighbor alltoallw (ring topology).
+    /// Same as alltoallv since we only use bytes.
+    pub fn ineighbor_alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
+        self.ineighbor_alltoallv(sendbuf, recvbuf, send_counts, recv_counts, send_displs, recv_displs)
+    }
 }
