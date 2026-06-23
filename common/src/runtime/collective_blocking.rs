@@ -736,6 +736,206 @@ impl OsUContext {
         self.alltoallv(sendbuf, recvbuf, sendcounts, sdispls, recvcounts, rdispls)
     }
 
+    /// Neighbor allgather (ring topology).
+    /// Each rank sends msg_size bytes to its two neighbors and receives from both.
+    pub fn neighbor_allgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
+            if copy_len > 0 {
+                recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const TAG: u64 = 0xBADC0DEA;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send to both neighbors
+        for &dst in &neighbors {
+            self.endpoint(dst)
+                .tag_send(&sendbuf[..msg_size.min(sendbuf.len())], TAG, &tag_param)
+                .expect("neighbor_allgather send");
+        }
+
+        // Receive from both neighbors
+        for (neighbor_idx, &src) in neighbors.iter().enumerate() {
+            let _ = src;
+            let offset = neighbor_idx * msg_size;
+            let end = (offset + msg_size).min(recvbuf.len());
+            let mut recv_buf = vec![0u8; msg_size];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
+                .expect("neighbor_allgather recv")
+                .expect("neighbor_allgather recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+            let copy_len = (end - offset).min(recv_buf.len());
+            recvbuf[offset..offset + copy_len].copy_from_slice(&recv_buf[..copy_len]);
+        }
+    }
+
+    /// Neighbor allgatherv (ring topology).
+    /// Same as neighbor_allgather but with variable recv counts/displacements.
+    pub fn neighbor_allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_count: usize, recv_counts: &[usize], recv_displs: &[usize]) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let offset = recv_displs.get(rank).copied().unwrap_or(0);
+            let len = recv_counts.get(rank).copied().unwrap_or(0);
+            let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+            if copy_len > 0 {
+                recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const TAG: u64 = 0xBADC0DEB;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send to both neighbors
+        for &dst in &neighbors {
+            let len = send_count.min(sendbuf.len());
+            self.endpoint(dst)
+                .tag_send(&sendbuf[..len], TAG, &tag_param)
+                .expect("neighbor_allgatherv send");
+        }
+
+        // Receive from both neighbors with variable counts/displacements
+        for (neighbor_idx, _src) in neighbors.iter().enumerate() {
+            let len = recv_counts.get(neighbor_idx).copied().unwrap_or(0);
+            let offset = recv_displs.get(neighbor_idx).copied().unwrap_or(0);
+            let mut recv_buf = vec![0u8; len];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
+                .expect("neighbor_allgatherv recv")
+                .expect("neighbor_allgatherv recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+            let copy_len = len.min(recvbuf.len().saturating_sub(offset));
+            if copy_len > 0 {
+                recvbuf[offset..offset + copy_len].copy_from_slice(&recv_buf[..copy_len]);
+            }
+        }
+    }
+
+    /// Neighbor alltoall (ring topology).
+    /// Each rank sends msg_size bytes to each neighbor and receives msg_size bytes from each neighbor.
+    pub fn neighbor_alltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
+            if copy_len > 0 {
+                recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
+            }
+            return;
+        }
+
+        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const TAG: u64 = 0xBADC0DEC;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send to both neighbors (sendbuf[neighbor_idx * msg_size] goes to that neighbor)
+        for (neighbor_idx, &dst) in neighbors.iter().enumerate() {
+            let offset = neighbor_idx * msg_size;
+            let end = (offset + msg_size).min(sendbuf.len());
+            if offset < sendbuf.len() {
+                self.endpoint(dst)
+                    .tag_send(&sendbuf[offset..end], TAG, &tag_param)
+                    .expect("neighbor_alltoall send");
+            }
+        }
+
+        // Receive from both neighbors
+        for (neighbor_idx, _src) in neighbors.iter().enumerate() {
+            let offset = neighbor_idx * msg_size;
+            let end = (offset + msg_size).min(recvbuf.len());
+            let mut recv_buf = vec![0u8; msg_size];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
+                .expect("neighbor_alltoall recv")
+                .expect("neighbor_alltoall recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+            let copy_len = (end - offset).min(recv_buf.len());
+            recvbuf[offset..offset + copy_len].copy_from_slice(&recv_buf[..copy_len]);
+        }
+    }
+
+    /// Neighbor alltoallv (ring topology).
+    /// Variable counts/displacements for both send and receive.
+    pub fn neighbor_alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], send_displs: &[usize], recv_counts: &[usize], recv_displs: &[usize]) {
+        let rank = self.rank;
+        let size = self.size;
+
+        if size <= 1 {
+            for p in 0..size {
+                let src_off = send_displs.get(p).copied().unwrap_or(0);
+                let dst_off = recv_displs.get(p).copied().unwrap_or(0);
+                let len = send_counts.get(p).copied().unwrap_or(0);
+                let copy = len.min(sendbuf.len().saturating_sub(src_off)).min(recvbuf.len().saturating_sub(dst_off));
+                if copy > 0 {
+                    recvbuf[dst_off..dst_off + copy].copy_from_slice(&sendbuf[src_off..src_off + copy]);
+                }
+            }
+            return;
+        }
+
+        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        const TAG: u64 = 0xBADC0DED;
+        const TAG_MASK: u64 = u64::MAX;
+
+        // Send to both neighbors using variable counts/displacements
+        for (neighbor_idx, &dst) in neighbors.iter().enumerate() {
+            let src_off = send_displs.get(neighbor_idx).copied().unwrap_or(0);
+            let len = send_counts.get(neighbor_idx).copied().unwrap_or(0);
+            let end = (src_off + len).min(sendbuf.len());
+            if src_off < sendbuf.len() && len > 0 {
+                self.endpoint(dst)
+                    .tag_send(&sendbuf[src_off..end], TAG, &tag_param)
+                    .expect("neighbor_alltoallv send");
+            }
+        }
+
+        // Receive from both neighbors using variable counts/displacements
+        for (neighbor_idx, _src) in neighbors.iter().enumerate() {
+            let len = recv_counts.get(neighbor_idx).copied().unwrap_or(0);
+            let offset = recv_displs.get(neighbor_idx).copied().unwrap_or(0);
+            let mut recv_buf = vec![0u8; len];
+            let req = self.worker()
+                .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
+                .expect("neighbor_alltoallv recv")
+                .expect("neighbor_alltoallv recv request");
+            while !req.check_finished().unwrap_or(false) {
+                self.progress();
+            }
+            let copy_len = len.min(recvbuf.len().saturating_sub(offset));
+            if copy_len > 0 {
+                recvbuf[offset..offset + copy_len].copy_from_slice(&recv_buf[..copy_len]);
+            }
+        }
+    }
+
+    /// Neighbor alltoallw (ring topology).
+    /// Same as alltoallv since we only use bytes.
+    pub fn neighbor_alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], send_displs: &[usize], recv_counts: &[usize], recv_displs: &[usize]) {
+        self.neighbor_alltoallv(sendbuf, recvbuf, send_counts, send_displs, recv_counts, recv_displs)
+    }
+
     /// Reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs` bytes.
     pub fn reduce_scatter_block(&self, sendbuf: &[u8], recvbuf: &mut [u8], elemcount: usize) {
         let rank = self.rank;
