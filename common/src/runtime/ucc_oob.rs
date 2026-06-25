@@ -6,9 +6,9 @@
 use std::cell::RefCell;
 use std::os::raw::c_void;
 
+use ucx_sys::RequestParamBuilder;
 use ucx_sys::ep;
 use ucx_sys::worker;
-use ucx_sys::RequestParamBuilder;
 
 use crate::runtime::constants::*;
 
@@ -151,7 +151,10 @@ unsafe extern "C" fn ucc_oob_allgather(
                 let mut temp_buf = vec![0u8; size];
                 let peer_tag = UCC_OOB_TAG_BASE + peer as u64;
 
-                let dbg3 = format!("[OOB] rank={} posting recv from peer={} tag=0x{:x}\n", my_rank, peer, peer_tag);
+                let dbg3 = format!(
+                    "[OOB] rank={} posting recv from peer={} tag=0x{:x}\n",
+                    my_rank, peer, peer_tag
+                );
                 let _ = libc::write(libc::STDERR_FILENO, dbg3.as_ptr() as *const _, dbg3.len());
 
                 let recv_result =

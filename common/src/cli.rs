@@ -48,7 +48,11 @@ pub enum MpiDataType {
 
 /// Benchmark CLI arguments matching the C reference implementation.
 #[derive(Parser, Debug, Clone)]
-#[command(version = "7.5.2", about = "OSU Micro-Benchmarks", disable_version_flag = true)]
+#[command(
+    version = "7.5.2",
+    about = "OSU Micro-Benchmarks",
+    disable_version_flag = true
+)]
 pub struct CliArgs {
     /// Minimum message size (bytes), or MIN:MAX:INCR format
     #[arg(short = 'm', long = "message-size", default_value_t = 1)]

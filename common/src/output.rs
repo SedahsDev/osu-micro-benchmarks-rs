@@ -45,11 +45,23 @@ pub fn print_header<W: Write>(writer: &mut W, name: &str, bench_type: BenchmarkT
     let title = match bench_type {
         BenchmarkType::Latency => format!("OSU MPI Latency Test (v{})", VERSION),
         BenchmarkType::Bandwidth => format!("OSU MPI Bandwidth Test (v{})", VERSION),
-        BenchmarkType::BiBandwidth => format!("OSU MPI Bidirectional Bandwidth Test (v{})", VERSION),
-        BenchmarkType::MbwMr => format!("OSU MPI Multi-Buffer and Multi-Region Bandwidth Test (v{})", VERSION),
-        BenchmarkType::CollectiveLatency => format!("OSU MPI Collective Latency Test (v{})", VERSION),
-        BenchmarkType::CollectiveBandwidth => format!("OSU MPI Collective Bandwidth Test (v{})", VERSION),
-        BenchmarkType::NonBlockingCollective => format!("OSU MPI Non-Blocking Collective Latency Test (v{})", VERSION),
+        BenchmarkType::BiBandwidth => {
+            format!("OSU MPI Bidirectional Bandwidth Test (v{})", VERSION)
+        }
+        BenchmarkType::MbwMr => format!(
+            "OSU MPI Multi-Buffer and Multi-Region Bandwidth Test (v{})",
+            VERSION
+        ),
+        BenchmarkType::CollectiveLatency => {
+            format!("OSU MPI Collective Latency Test (v{})", VERSION)
+        }
+        BenchmarkType::CollectiveBandwidth => {
+            format!("OSU MPI Collective Bandwidth Test (v{})", VERSION)
+        }
+        BenchmarkType::NonBlockingCollective => format!(
+            "OSU MPI Non-Blocking Collective Latency Test (v{})",
+            VERSION
+        ),
         BenchmarkType::Startup => format!("OSU MPI Startup Test (v{})", VERSION),
         BenchmarkType::CongestionBw => format!("OSU MPI Congestion Bandwidth Test (v{})", VERSION),
     };
@@ -91,7 +103,11 @@ pub fn print_bibw_header<W: Write>(writer: &mut W) {
 /// Format: `<size>    <avg>    <min>    <max>`
 /// Uses C-matching format: `{:<10}` for size, `{:>20.2}` for latency values.
 pub fn print_latency_row<W: Write>(writer: &mut W, size: usize, avg: f64, min: f64, max: f64) {
-    let _ = write!(writer, "{:<10} {:>20.2} {:>20.2} {:>20.2}", size, avg, min, max);
+    let _ = write!(
+        writer,
+        "{:<10} {:>20.2} {:>20.2} {:>20.2}",
+        size, avg, min, max
+    );
     let _ = writer.flush();
 }
 
@@ -107,7 +123,11 @@ pub fn print_latency_avg<W: Write>(writer: &mut W, size: usize, avg: f64) {
 ///
 /// Format: `<size>    <avg>    <min>    <max>`
 pub fn print_bandwidth_row<W: Write>(writer: &mut W, size: usize, avg: f64, min: f64, max: f64) {
-    let _ = write!(writer, "{:<10} {:>20.2} {:>20.2} {:>20.2}", size, avg, min, max);
+    let _ = write!(
+        writer,
+        "{:<10} {:>20.2} {:>20.2} {:>20.2}",
+        size, avg, min, max
+    );
     let _ = writer.flush();
 }
 
@@ -124,18 +144,9 @@ pub fn print_newline<W: Write>(writer: &mut W) {
 }
 
 /// Print a latency data row with validation status.
-pub fn print_latency_row_validate<W: Write>(
-    writer: &mut W,
-    size: usize,
-    avg: f64,
-    errors: usize,
-) {
+pub fn print_latency_row_validate<W: Write>(writer: &mut W, size: usize, avg: f64, errors: usize) {
     let status = if errors > 0 { "Fail" } else { "Pass" };
-    let _ = write!(
-        writer,
-        "{:<10} {:>20.2} {:>20}",
-        size, avg, status
-    );
+    let _ = write!(writer, "{:<10} {:>20.2} {:>20}", size, avg, status);
     let _ = writer.flush();
 }
 

@@ -63,8 +63,12 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         // Warmup
         for _ in 0..skip {
             do_bibw_iteration(
-                rank, ep, worker, &tag_param,
-                &send_buf, &mut recv_buf,
+                rank,
+                ep,
+                worker,
+                &tag_param,
+                &send_buf,
+                &mut recv_buf,
                 window_size,
             );
         }
@@ -73,8 +77,12 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let start = Wtime::new();
         for _ in 0..iterations {
             do_bibw_iteration(
-                rank, ep, worker, &tag_param,
-                &send_buf, &mut recv_buf,
+                rank,
+                ep,
+                worker,
+                &tag_param,
+                &send_buf,
+                &mut recv_buf,
                 window_size,
             );
         }
@@ -125,7 +133,10 @@ fn do_bibw_iteration(
     // Post window of sends
     let mut send_reqs: Vec<ucx_sys::Request> = Vec::with_capacity(window_size);
     for _ in 0..window_size {
-        if let Some(r) = ep.tag_send(send_buf, send_tag, tag_param).expect("tag_send") {
+        if let Some(r) = ep
+            .tag_send(send_buf, send_tag, tag_param)
+            .expect("tag_send")
+        {
             send_reqs.push(r);
         }
     }
@@ -181,7 +192,11 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Bi-Directional Bandwidth", BenchmarkType::BiBandwidth);
+        output::print_header(
+            &mut out,
+            "Bi-Directional Bandwidth",
+            BenchmarkType::BiBandwidth,
+        );
         output::print_bandwidth_header(&mut out);
     }
 

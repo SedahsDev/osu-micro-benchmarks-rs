@@ -110,7 +110,11 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Neighbor Alltoall Latency", BenchmarkType::CollectiveLatency);
+        output::print_header(
+            &mut out,
+            "Neighbor Alltoall Latency",
+            BenchmarkType::CollectiveLatency,
+        );
         output::print_latency_header(&mut out);
     }
 

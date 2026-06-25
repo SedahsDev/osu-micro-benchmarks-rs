@@ -108,7 +108,13 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         if rank == 0 {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            output::print_latency_row(&mut out, msg_size, result.avg_us, result.min_us, result.max_us);
+            output::print_latency_row(
+                &mut out,
+                msg_size,
+                result.avg_us,
+                result.min_us,
+                result.max_us,
+            );
             output::print_newline(&mut out);
         }
     }

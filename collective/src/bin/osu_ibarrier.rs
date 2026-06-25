@@ -89,15 +89,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let stdout = io::stdout();
         let mut out = stdout.lock();
         output::print_nbc_header(&mut out);
-        output::print_nbc_row(
-            &mut out,
-            0,
-            overlap,
-            cpu_avg,
-            comm_avg,
-            wait_avg,
-            init_avg,
-        );
+        output::print_nbc_row(&mut out, 0, overlap, cpu_avg, comm_avg, wait_avg, init_avg);
         output::print_newline(&mut out);
     }
 }
@@ -111,7 +103,11 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Non-blocking Barrier", BenchmarkType::NonBlockingCollective);
+        output::print_header(
+            &mut out,
+            "Non-blocking Barrier",
+            BenchmarkType::NonBlockingCollective,
+        );
     }
 
     run_benchmark(&ctx, &args);

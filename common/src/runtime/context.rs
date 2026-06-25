@@ -2,13 +2,15 @@
 
 use std::ffi::CString;
 
+use ucx_sys::RequestParamBuilder;
 use ucx_sys::context;
 use ucx_sys::ep;
 use ucx_sys::worker;
 use ucx_sys::worker::RemoteWorkerAddress;
-use ucx_sys::RequestParamBuilder;
 
-use pmix::{commit, fence, get_value, init, put_value, Context, GLOBAL, PmixValueBuilder, RANK_WILDCARD};
+use pmix::{
+    Context, GLOBAL, PmixValueBuilder, RANK_WILDCARD, commit, fence, get_value, init, put_value,
+};
 
 use crate::runtime::constants::*;
 use crate::runtime::helpers::flush_ep_blocking;

@@ -22,7 +22,8 @@ impl OsUContext {
         let msg = [rank as u8];
         for peer in 0..size {
             if peer != rank {
-                self.endpoint(peer).tag_send(&msg, BARRIER_TAG, &tag_param)
+                self.endpoint(peer)
+                    .tag_send(&msg, BARRIER_TAG, &tag_param)
                     .expect("barrier send");
             }
         }
@@ -30,7 +31,8 @@ impl OsUContext {
         let mut recv_buf = [0u8; 1];
         for peer in 0..size {
             if peer != rank {
-                let req = worker.tag_recv(&mut recv_buf, BARRIER_TAG, TAG_MASK, &tag_param)
+                let req = worker
+                    .tag_recv(&mut recv_buf, BARRIER_TAG, TAG_MASK, &tag_param)
                     .expect("barrier recv")
                     .expect("barrier recv request");
                 while !req.check_finished().unwrap_or(false) {
@@ -75,7 +77,10 @@ impl OsUContext {
                 gathered[peer] = u64::from_le_bytes(recv_buf);
             }
         }
-        gathered.into_iter().map(|b| f64::from_bits(b)).fold(f64::INFINITY, f64::min)
+        gathered
+            .into_iter()
+            .map(|b| f64::from_bits(b))
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Reduce a f64 value to find the maximum across all ranks (UCX fallback).
@@ -112,7 +117,10 @@ impl OsUContext {
                 gathered[peer] = u64::from_le_bytes(recv_buf);
             }
         }
-        gathered.into_iter().map(|b| f64::from_bits(b)).fold(f64::NEG_INFINITY, f64::max)
+        gathered
+            .into_iter()
+            .map(|b| f64::from_bits(b))
+            .fold(f64::NEG_INFINITY, f64::max)
     }
 
     /// Sum a f64 value across all ranks (UCX fallback).
@@ -170,7 +178,8 @@ impl OsUContext {
 
         for peer in 0..size {
             if peer != rank {
-                self.endpoint(peer).tag_send(&value.to_le_bytes(), REDUCE_TAG, &tag_param)
+                self.endpoint(peer)
+                    .tag_send(&value.to_le_bytes(), REDUCE_TAG, &tag_param)
                     .expect("reduce send");
             }
         }
@@ -178,7 +187,9 @@ impl OsUContext {
         let mut recv_buf = [0u8; 8];
         for peer in 0..size {
             if peer != rank {
-                let req = self.worker.tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
+                let req = self
+                    .worker
+                    .tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
                     .expect("reduce recv")
                     .expect("reduce recv request");
                 while !req.check_finished().unwrap_or(false) {
@@ -257,7 +268,8 @@ impl OsUContext {
         let mut recv_buf = vec![0u8; msg_size];
         for peer in 0..size {
             if peer != rank {
-                let req = self.worker()
+                let req = self
+                    .worker()
                     .tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
                     .expect("reduce recv")
                     .expect("reduce recv request");
@@ -307,7 +319,8 @@ impl OsUContext {
         let mut recv_buf = vec![0u8; msg_size];
         for peer in 0..size {
             if peer != rank {
-                let req = self.worker()
+                let req = self
+                    .worker()
                     .tag_recv(&mut recv_buf, ALLGATHER_TAG, TAG_MASK, &tag_param)
                     .expect("allgather recv")
                     .expect("allgather recv request");
@@ -346,7 +359,8 @@ impl OsUContext {
         let mut recv_buf = vec![0u8; msg_size];
         for peer in 0..size {
             if peer != rank {
-                let req = self.worker()
+                let req = self
+                    .worker()
                     .tag_recv(&mut recv_buf, ALLTOALL_TAG, TAG_MASK, &tag_param)
                     .expect("alltoall recv")
                     .expect("alltoall recv request");
@@ -357,9 +371,8 @@ impl OsUContext {
                 recvbuf[peer_offset..peer_offset + msg_size].copy_from_slice(&recv_buf);
             } else {
                 let my_offset = rank * msg_size;
-                recvbuf[my_offset..my_offset + msg_size].copy_from_slice(
-                    &sendbuf[my_offset..my_offset + msg_size],
-                );
+                recvbuf[my_offset..my_offset + msg_size]
+                    .copy_from_slice(&sendbuf[my_offset..my_offset + msg_size]);
             }
         }
     }
@@ -405,8 +418,7 @@ impl OsUContext {
                     }
                     let peer_offset = peer * msg_size;
                     if peer_offset + msg_size <= recvbuf.len() {
-                        recvbuf[peer_offset..peer_offset + msg_size]
-                            .copy_from_slice(&recv_buf);
+                        recvbuf[peer_offset..peer_offset + msg_size].copy_from_slice(&recv_buf);
                     }
                 }
             }
@@ -440,7 +452,11 @@ impl OsUContext {
                     let peer_offset = peer * msg_size;
                     if peer_offset + msg_size <= sendbuf.len() {
                         self.endpoint(peer)
-                            .tag_send(&sendbuf[peer_offset..peer_offset + msg_size], SCATTER_TAG, &tag_param)
+                            .tag_send(
+                                &sendbuf[peer_offset..peer_offset + msg_size],
+                                SCATTER_TAG,
+                                &tag_param,
+                            )
                             .expect("scatter send");
                     }
                 }
@@ -462,7 +478,14 @@ impl OsUContext {
     }
 
     /// Gatherv: all ranks send `msg_size` bytes to root; root receives into variable-count slots.
-    pub fn gatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize], root: usize) {
+    pub fn gatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+        root: usize,
+    ) {
         let rank = self.rank;
         let size = self.size;
 
@@ -470,7 +493,9 @@ impl OsUContext {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = displs[rank];
                 let len = counts[rank];
-                let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                let copy_len = len
+                    .min(sendbuf.len())
+                    .min(recvbuf.len().saturating_sub(offset));
                 recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
             }
             return;
@@ -479,7 +504,9 @@ impl OsUContext {
         if rank != root {
             let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
             const GATHERV_TAG: u64 = 0xBADC0DE6;
-            let req = self.endpoint(root).tag_send(sendbuf, GATHERV_TAG, &tag_param);
+            let req = self
+                .endpoint(root)
+                .tag_send(sendbuf, GATHERV_TAG, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
@@ -503,7 +530,9 @@ impl OsUContext {
                 let offset = displs[peer];
                 let len = counts[peer];
                 let mut recv_buf = vec![0u8; len];
-                let req = self.worker().tag_recv(&mut recv_buf, GATHERV_TAG, TAG_MASK, &tag_param);
+                let req = self
+                    .worker()
+                    .tag_recv(&mut recv_buf, GATHERV_TAG, TAG_MASK, &tag_param);
                 if let Ok(Some(mut req)) = req {
                     while !req.check_finished().unwrap_or(false) {
                         self.progress();
@@ -517,7 +546,14 @@ impl OsUContext {
     }
 
     /// Scatterv: root sends variable-count data; each rank receives `counts[rank]` bytes.
-    pub fn scatterv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize], root: usize) {
+    pub fn scatterv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+        root: usize,
+    ) {
         let rank = self.rank;
         let size = self.size;
 
@@ -525,7 +561,9 @@ impl OsUContext {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = displs[rank];
                 let len = counts[rank];
-                let copy_len = len.min(sendbuf.len().saturating_sub(offset)).min(recvbuf.len());
+                let copy_len = len
+                    .min(sendbuf.len().saturating_sub(offset))
+                    .min(recvbuf.len());
                 recvbuf[..copy_len].copy_from_slice(&sendbuf[offset..offset + copy_len]);
             }
             return;
@@ -548,7 +586,11 @@ impl OsUContext {
                 let offset = displs[peer];
                 let len = counts[peer];
                 if offset + len <= sendbuf.len() {
-                    let req = self.endpoint(peer).tag_send(&sendbuf[offset..offset + len], SCATTERV_TAG, &tag_param);
+                    let req = self.endpoint(peer).tag_send(
+                        &sendbuf[offset..offset + len],
+                        SCATTERV_TAG,
+                        &tag_param,
+                    );
                     if let Ok(Some(mut req)) = req {
                         while !req.check_finished().unwrap_or(false) {
                             self.progress();
@@ -561,7 +603,9 @@ impl OsUContext {
             const SCATTERV_TAG: u64 = 0xBADC0DE7;
             const TAG_MASK: u64 = u64::MAX;
 
-            let req = self.worker().tag_recv(recvbuf, SCATTERV_TAG, TAG_MASK, &tag_param);
+            let req = self
+                .worker()
+                .tag_recv(recvbuf, SCATTERV_TAG, TAG_MASK, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
@@ -571,7 +615,13 @@ impl OsUContext {
     }
 
     /// Allgatherv: all ranks send `msg_size` bytes; every rank receives into variable-count slots.
-    pub fn allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize]) {
+    pub fn allgatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+    ) {
         let rank = self.rank;
         let size = self.size;
 
@@ -579,7 +629,9 @@ impl OsUContext {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = displs[rank];
                 let len = counts[rank];
-                let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                let copy_len = len
+                    .min(sendbuf.len())
+                    .min(recvbuf.len().saturating_sub(offset));
                 recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
             }
             return;
@@ -606,7 +658,9 @@ impl OsUContext {
             }
             let len = counts[peer];
             let mut buf = vec![0u8; len];
-            let req = self.worker().tag_recv(&mut buf, ALLGATHERV_TAG, TAG_MASK, &tag_param);
+            let req = self
+                .worker()
+                .tag_recv(&mut buf, ALLGATHERV_TAG, TAG_MASK, &tag_param);
             temp_bufs.push(buf);
             match req {
                 Ok(r) => recv_reqs.push(r),
@@ -619,7 +673,9 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            let req = self.endpoint(peer).tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
+            let req = self
+                .endpoint(peer)
+                .tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
@@ -646,7 +702,15 @@ impl OsUContext {
     }
 
     /// Alltoallv: each rank sends variable-size pieces to every peer.
-    pub fn alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], sendcounts: &[usize], sdispls: &[usize], recvcounts: &[usize], rdispls: &[usize]) {
+    pub fn alltoallv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        sendcounts: &[usize],
+        sdispls: &[usize],
+        recvcounts: &[usize],
+        rdispls: &[usize],
+    ) {
         let rank = self.rank;
         let size = self.size;
 
@@ -656,7 +720,8 @@ impl OsUContext {
                 let dst_off = rdispls[p];
                 let len = sendcounts[p];
                 if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
-                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                    recvbuf[dst_off..dst_off + len]
+                        .copy_from_slice(&sendbuf[src_off..src_off + len]);
                 }
             }
             return;
@@ -675,7 +740,8 @@ impl OsUContext {
                 let dst_off = rdispls[peer];
                 let len = sendcounts[peer];
                 if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
-                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                    recvbuf[dst_off..dst_off + len]
+                        .copy_from_slice(&sendbuf[src_off..src_off + len]);
                 }
                 recv_reqs.push(None);
                 temp_bufs.push(Vec::new());
@@ -683,7 +749,10 @@ impl OsUContext {
             }
             let len = recvcounts[peer];
             let mut buf = vec![0u8; len];
-            match self.worker().tag_recv(&mut buf, ALLTOALLV_TAG, TAG_MASK, &tag_param) {
+            match self
+                .worker()
+                .tag_recv(&mut buf, ALLTOALLV_TAG, TAG_MASK, &tag_param)
+            {
                 Ok(r) => {
                     temp_bufs.push(buf);
                     recv_reqs.push(r);
@@ -703,7 +772,11 @@ impl OsUContext {
             let src_off = sdispls[peer];
             let len = sendcounts[peer];
             if src_off + len <= sendbuf.len() {
-                let req = self.endpoint(peer).tag_send(&sendbuf[src_off..src_off + len], ALLTOALLV_TAG, &tag_param);
+                let req = self.endpoint(peer).tag_send(
+                    &sendbuf[src_off..src_off + len],
+                    ALLTOALLV_TAG,
+                    &tag_param,
+                );
                 if let Ok(Some(mut req)) = req {
                     while !req.check_finished().unwrap_or(false) {
                         self.progress();
@@ -732,7 +805,15 @@ impl OsUContext {
 
     /// Alltoallw: like alltoallv but with per-peer datatypes.
     /// Since we only use bytes, this is identical to alltoallv.
-    pub fn alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], sendcounts: &[usize], sdispls: &[usize], recvcounts: &[usize], rdispls: &[usize]) {
+    pub fn alltoallw(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        sendcounts: &[usize],
+        sdispls: &[usize],
+        recvcounts: &[usize],
+        rdispls: &[usize],
+    ) {
         self.alltoallv(sendbuf, recvbuf, sendcounts, sdispls, recvcounts, rdispls)
     }
 
@@ -750,7 +831,10 @@ impl OsUContext {
             return;
         }
 
-        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let neighbors = [
+            (rank.wrapping_sub(1)).rem_euclid(size),
+            (rank + 1).rem_euclid(size),
+        ];
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
         const TAG: u64 = 0xBADC0DEA;
         const TAG_MASK: u64 = u64::MAX;
@@ -768,7 +852,8 @@ impl OsUContext {
             let offset = neighbor_idx * msg_size;
             let end = (offset + msg_size).min(recvbuf.len());
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
                 .expect("neighbor_allgather recv")
                 .expect("neighbor_allgather recv request");
@@ -782,21 +867,33 @@ impl OsUContext {
 
     /// Neighbor allgatherv (ring topology).
     /// Same as neighbor_allgather but with variable recv counts/displacements.
-    pub fn neighbor_allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_count: usize, recv_counts: &[usize], recv_displs: &[usize]) {
+    pub fn neighbor_allgatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_count: usize,
+        recv_counts: &[usize],
+        recv_displs: &[usize],
+    ) {
         let rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
             let offset = recv_displs.get(rank).copied().unwrap_or(0);
             let len = recv_counts.get(rank).copied().unwrap_or(0);
-            let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+            let copy_len = len
+                .min(sendbuf.len())
+                .min(recvbuf.len().saturating_sub(offset));
             if copy_len > 0 {
                 recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
             }
             return;
         }
 
-        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let neighbors = [
+            (rank.wrapping_sub(1)).rem_euclid(size),
+            (rank + 1).rem_euclid(size),
+        ];
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
         const TAG: u64 = 0xBADC0DEB;
         const TAG_MASK: u64 = u64::MAX;
@@ -814,7 +911,8 @@ impl OsUContext {
             let len = recv_counts.get(neighbor_idx).copied().unwrap_or(0);
             let offset = recv_displs.get(neighbor_idx).copied().unwrap_or(0);
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
                 .expect("neighbor_allgatherv recv")
                 .expect("neighbor_allgatherv recv request");
@@ -842,7 +940,10 @@ impl OsUContext {
             return;
         }
 
-        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let neighbors = [
+            (rank.wrapping_sub(1)).rem_euclid(size),
+            (rank + 1).rem_euclid(size),
+        ];
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
         const TAG: u64 = 0xBADC0DEC;
         const TAG_MASK: u64 = u64::MAX;
@@ -863,7 +964,8 @@ impl OsUContext {
             let offset = neighbor_idx * msg_size;
             let end = (offset + msg_size).min(recvbuf.len());
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
                 .expect("neighbor_alltoall recv")
                 .expect("neighbor_alltoall recv request");
@@ -877,7 +979,15 @@ impl OsUContext {
 
     /// Neighbor alltoallv (ring topology).
     /// Variable counts/displacements for both send and receive.
-    pub fn neighbor_alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], send_displs: &[usize], recv_counts: &[usize], recv_displs: &[usize]) {
+    pub fn neighbor_alltoallv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        send_displs: &[usize],
+        recv_counts: &[usize],
+        recv_displs: &[usize],
+    ) {
         let rank = self.rank;
         let size = self.size;
 
@@ -886,15 +996,21 @@ impl OsUContext {
                 let src_off = send_displs.get(p).copied().unwrap_or(0);
                 let dst_off = recv_displs.get(p).copied().unwrap_or(0);
                 let len = send_counts.get(p).copied().unwrap_or(0);
-                let copy = len.min(sendbuf.len().saturating_sub(src_off)).min(recvbuf.len().saturating_sub(dst_off));
+                let copy = len
+                    .min(sendbuf.len().saturating_sub(src_off))
+                    .min(recvbuf.len().saturating_sub(dst_off));
                 if copy > 0 {
-                    recvbuf[dst_off..dst_off + copy].copy_from_slice(&sendbuf[src_off..src_off + copy]);
+                    recvbuf[dst_off..dst_off + copy]
+                        .copy_from_slice(&sendbuf[src_off..src_off + copy]);
                 }
             }
             return;
         }
 
-        let neighbors = [(rank.wrapping_sub(1)).rem_euclid(size), (rank + 1).rem_euclid(size)];
+        let neighbors = [
+            (rank.wrapping_sub(1)).rem_euclid(size),
+            (rank + 1).rem_euclid(size),
+        ];
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
         const TAG: u64 = 0xBADC0DED;
         const TAG_MASK: u64 = u64::MAX;
@@ -916,7 +1032,8 @@ impl OsUContext {
             let len = recv_counts.get(neighbor_idx).copied().unwrap_or(0);
             let offset = recv_displs.get(neighbor_idx).copied().unwrap_or(0);
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, TAG, TAG_MASK, &tag_param)
                 .expect("neighbor_alltoallv recv")
                 .expect("neighbor_alltoallv recv request");
@@ -932,8 +1049,23 @@ impl OsUContext {
 
     /// Neighbor alltoallw (ring topology).
     /// Same as alltoallv since we only use bytes.
-    pub fn neighbor_alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], send_displs: &[usize], recv_counts: &[usize], recv_displs: &[usize]) {
-        self.neighbor_alltoallv(sendbuf, recvbuf, send_counts, send_displs, recv_counts, recv_displs)
+    pub fn neighbor_alltoallw(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        send_displs: &[usize],
+        recv_counts: &[usize],
+        recv_displs: &[usize],
+    ) {
+        self.neighbor_alltoallv(
+            sendbuf,
+            recvbuf,
+            send_counts,
+            send_displs,
+            recv_counts,
+            recv_displs,
+        )
     }
 
     /// Reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs` bytes.
@@ -965,7 +1097,10 @@ impl OsUContext {
                 continue;
             }
             let dst = &mut gathered[peer * elemcount..(peer + 1) * elemcount];
-            match self.worker().tag_recv(dst, REDUCE_SCATTER_BLOCK_TAG, TAG_MASK, &tag_param) {
+            match self
+                .worker()
+                .tag_recv(dst, REDUCE_SCATTER_BLOCK_TAG, TAG_MASK, &tag_param)
+            {
                 Ok(r) => recv_reqs.push(r),
                 _ => recv_reqs.push(None),
             }
@@ -975,7 +1110,9 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            let req = self.endpoint(peer).tag_send(sendbuf, REDUCE_SCATTER_BLOCK_TAG, &tag_param);
+            let req = self
+                .endpoint(peer)
+                .tag_send(sendbuf, REDUCE_SCATTER_BLOCK_TAG, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
@@ -1039,7 +1176,10 @@ impl OsUContext {
                 continue;
             }
             let dst = &mut gathered[peer * total..(peer + 1) * total];
-            match self.worker().tag_recv(dst, REDUCESCATTER_TAG, TAG_MASK, &tag_param) {
+            match self
+                .worker()
+                .tag_recv(dst, REDUCESCATTER_TAG, TAG_MASK, &tag_param)
+            {
                 Ok(r) => recv_reqs.push(r),
                 _ => recv_reqs.push(None),
             }
@@ -1049,7 +1189,9 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            let req = self.endpoint(peer).tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
+            let req = self
+                .endpoint(peer)
+                .tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
             if let Ok(Some(mut req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();

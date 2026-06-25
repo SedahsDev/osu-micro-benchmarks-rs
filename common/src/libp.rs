@@ -65,7 +65,12 @@ pub fn find_library(name: &str) -> Option<String> {
 /// and any paths specified in `UCX_HOME` or `PMIX_HOME`.
 pub fn ensure_hpc_lib_paths() {
     // Standard system paths
-    for path in &["/usr/local/lib", "/usr/lib", "/usr/local/lib64", "/usr/lib64"] {
+    for path in &[
+        "/usr/local/lib",
+        "/usr/lib",
+        "/usr/local/lib64",
+        "/usr/lib64",
+    ] {
         if std::path::Path::new(path).exists() {
             add_to_ld_library_path(path);
         }
@@ -96,7 +101,9 @@ mod tests {
 
     #[test]
     fn test_add_to_ld_library_path() {
-        env::remove_var("LD_LIBRARY_PATH");
+        unsafe {
+            env::remove_var("LD_LIBRARY_PATH");
+        }
         let added = add_to_ld_library_path("/test/path");
         assert!(added);
         let entries = ld_library_path_entries();
@@ -105,14 +112,18 @@ mod tests {
 
     #[test]
     fn test_add_duplicate() {
-        env::set_var("LD_LIBRARY_PATH", "/test/path");
+        unsafe {
+            env::set_var("LD_LIBRARY_PATH", "/test/path");
+        }
         let added = add_to_ld_library_path("/test/path");
         assert!(!added);
     }
 
     #[test]
     fn test_ld_library_path_entries() {
-        env::set_var("LD_LIBRARY_PATH", "/a:/b:/c");
+        unsafe {
+            env::set_var("LD_LIBRARY_PATH", "/a:/b:/c");
+        }
         let entries = ld_library_path_entries();
         assert_eq!(entries, vec!["/a", "/b", "/c"]);
     }

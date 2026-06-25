@@ -99,7 +99,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = [0u8; 1];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, BARRIER_TAG, TAG_MASK, &tag_param)
                 .expect("ibarrier recv")
                 .expect("ibarrier recv request");
@@ -151,7 +152,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = [0u8; 8];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
                 .expect("iallreduce recv")
                 .expect("iallreduce recv request");
@@ -199,7 +201,8 @@ impl OsUContext {
                 remaining: 0,
             }
         } else {
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(recvbuf, BCAST_TAG, TAG_MASK, &tag_param)
                 .expect("ibcast recv")
                 .expect("ibcast recv request");
@@ -256,7 +259,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, ALLGATHER_TAG, TAG_MASK, &tag_param)
                 .expect("iallgather recv")
                 .expect("iallgather recv request");
@@ -272,7 +276,13 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce: all ranks contribute, root gets the result.
-    pub fn ireduce(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize, msg_size: usize) -> OsURequest {
+    pub fn ireduce(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        root: usize,
+        msg_size: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -309,7 +319,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, REDUCE_TAG, TAG_MASK, &tag_param)
                 .expect("ireduce recv")
                 .expect("ireduce recv request");
@@ -325,7 +336,13 @@ impl OsUContext {
     }
 
     /// Non-blocking scatter: root sends one chunk per rank.
-    pub fn iscatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) -> OsURequest {
+    pub fn iscatter(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        msg_size: usize,
+        root: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -356,7 +373,11 @@ impl OsUContext {
                     let peer_offset = peer * msg_size;
                     if peer_offset + msg_size <= sendbuf.len() {
                         self.endpoint(peer)
-                            .tag_send(&sendbuf[peer_offset..peer_offset + msg_size], SCATTER_TAG, &tag_param)
+                            .tag_send(
+                                &sendbuf[peer_offset..peer_offset + msg_size],
+                                SCATTER_TAG,
+                                &tag_param,
+                            )
                             .expect("iscatter send");
                     }
                 }
@@ -368,7 +389,8 @@ impl OsUContext {
                 remaining: 0,
             }
         } else {
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(recvbuf, SCATTER_TAG, TAG_MASK, &tag_param)
                 .expect("iscatter recv")
                 .expect("iscatter recv request");
@@ -385,7 +407,13 @@ impl OsUContext {
     }
 
     /// Non-blocking gather: all ranks send to root.
-    pub fn igather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) -> OsURequest {
+    pub fn igather(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        msg_size: usize,
+        root: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -430,7 +458,8 @@ impl OsUContext {
                 }
 
                 let mut recv_buf = vec![0u8; msg_size];
-                let req = self.worker()
+                let req = self
+                    .worker()
                     .tag_recv(&mut recv_buf, GATHER_TAG, TAG_MASK, &tag_param)
                     .expect("igather recv")
                     .expect("igather recv request");
@@ -488,7 +517,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, ALLTOALL_TAG, TAG_MASK, &tag_param)
                 .expect("ialltoall recv")
                 .expect("ialltoall recv request");
@@ -504,7 +534,13 @@ impl OsUContext {
     }
 
     /// Non-blocking allgatherv: each rank sends, all receive with variable counts/displacements.
-    pub fn iallgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize]) -> OsURequest {
+    pub fn iallgatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -512,7 +548,9 @@ impl OsUContext {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = displs[rank];
                 let len = counts[rank];
-                let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                let copy_len = len
+                    .min(sendbuf.len())
+                    .min(recvbuf.len().saturating_sub(offset));
                 recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
             }
             return OsURequest {
@@ -553,7 +591,8 @@ impl OsUContext {
 
             let len = counts[peer];
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, ALLGATHERV_TAG, TAG_MASK, &tag_param)
                 .expect("iallgatherv recv")
                 .expect("iallgatherv recv request");
@@ -569,14 +608,24 @@ impl OsUContext {
     }
 
     /// Non-blocking gatherv: all ranks send to root with variable counts/displacements.
-    pub fn igatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize, recv_count: usize, send_count: usize) -> OsURequest {
+    pub fn igatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        root: usize,
+        recv_count: usize,
+        send_count: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = rank * recv_count;
-                let len = send_count.min(recv_count).min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+                let len = send_count
+                    .min(recv_count)
+                    .min(sendbuf.len())
+                    .min(recvbuf.len().saturating_sub(offset));
                 if len > 0 {
                     recvbuf[offset..offset + len].copy_from_slice(&sendbuf[..len]);
                 }
@@ -618,7 +667,8 @@ impl OsUContext {
                 }
 
                 let mut recv_buf = vec![0u8; recv_count];
-                let req = self.worker()
+                let req = self
+                    .worker()
                     .tag_recv(&mut recv_buf, GATHERV_TAG, TAG_MASK, &tag_param)
                     .expect("igatherv recv")
                     .expect("igatherv recv request");
@@ -635,7 +685,14 @@ impl OsUContext {
     }
 
     /// Non-blocking scatterv: root sends variable-count data to all ranks.
-    pub fn iscatterv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize], root: usize) -> OsURequest {
+    pub fn iscatterv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+        root: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -643,7 +700,9 @@ impl OsUContext {
             if !sendbuf.is_empty() && !recvbuf.is_empty() {
                 let offset = displs[rank];
                 let len = counts[rank];
-                let copy_len = len.min(sendbuf.len().saturating_sub(offset)).min(recvbuf.len());
+                let copy_len = len
+                    .min(sendbuf.len().saturating_sub(offset))
+                    .min(recvbuf.len());
                 recvbuf[..copy_len].copy_from_slice(&sendbuf[offset..offset + copy_len]);
             }
             return OsURequest {
@@ -684,7 +743,8 @@ impl OsUContext {
         } else {
             let len = counts[rank];
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, SCATTERV_TAG, TAG_MASK, &tag_param)
                 .expect("iscatterv recv")
                 .expect("iscatterv recv request");
@@ -701,7 +761,15 @@ impl OsUContext {
     }
 
     /// Non-blocking alltoallv: each rank sends variable-size pieces to every peer.
-    pub fn ialltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
+    pub fn ialltoallv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        recv_counts: &[usize],
+        send_displs: &[usize],
+        recv_displs: &[usize],
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -711,7 +779,8 @@ impl OsUContext {
                 let dst_off = recv_displs[p];
                 let len = send_counts[p];
                 if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
-                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                    recvbuf[dst_off..dst_off + len]
+                        .copy_from_slice(&sendbuf[src_off..src_off + len]);
                 }
             }
             return OsURequest {
@@ -748,7 +817,8 @@ impl OsUContext {
                 let dst_off = recv_displs[peer];
                 let len = send_counts[peer];
                 if src_off + len <= sendbuf.len() && dst_off + len <= recvbuf.len() {
-                    recvbuf[dst_off..dst_off + len].copy_from_slice(&sendbuf[src_off..src_off + len]);
+                    recvbuf[dst_off..dst_off + len]
+                        .copy_from_slice(&sendbuf[src_off..src_off + len]);
                 }
                 recv_reqs.push(None);
                 continue;
@@ -756,7 +826,8 @@ impl OsUContext {
 
             let len = recv_counts[peer];
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, ALLTOALLV_TAG, TAG_MASK, &tag_param)
                 .expect("ialltoallv recv")
                 .expect("ialltoallv recv request");
@@ -773,12 +844,32 @@ impl OsUContext {
 
     /// Non-blocking alltoallw: like alltoallv but with per-peer datatypes.
     /// Since we only use bytes, this is identical to ialltoallv.
-    pub fn ialltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
-        self.ialltoallv(sendbuf, recvbuf, send_counts, recv_counts, send_displs, recv_displs)
+    pub fn ialltoallw(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        recv_counts: &[usize],
+        send_displs: &[usize],
+        recv_displs: &[usize],
+    ) -> OsURequest {
+        self.ialltoallv(
+            sendbuf,
+            recvbuf,
+            send_counts,
+            recv_counts,
+            send_displs,
+            recv_displs,
+        )
     }
 
     /// Non-blocking reduce_scatter: all ranks send, each rank receives a portion.
-    pub fn ireduce_scatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], recvcounts: &[usize]) -> OsURequest {
+    pub fn ireduce_scatter(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        recvcounts: &[usize],
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -827,7 +918,8 @@ impl OsUContext {
             }
 
             let mut recv_buf = vec![0u8; total];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, REDUCESCATTER_TAG, TAG_MASK, &tag_param)
                 .expect("ireduce_scatter recv")
                 .expect("ireduce_scatter recv request");
@@ -843,7 +935,12 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs`.
-    pub fn ireduce_scatter_block(&self, sendbuf: &[u8], recvbuf: &mut [u8], elemcount: usize) -> OsURequest {
+    pub fn ireduce_scatter_block(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        elemcount: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -883,8 +980,14 @@ impl OsUContext {
             }
 
             let mut recv_buf = vec![0u8; elemcount];
-            let req = self.worker()
-                .tag_recv(&mut recv_buf, REDUCE_SCATTER_BLOCK_TAG, TAG_MASK, &tag_param)
+            let req = self
+                .worker()
+                .tag_recv(
+                    &mut recv_buf,
+                    REDUCE_SCATTER_BLOCK_TAG,
+                    TAG_MASK,
+                    &tag_param,
+                )
                 .expect("ireduce_scatter_block recv")
                 .expect("ireduce_scatter_block recv request");
             recv_reqs.push(Some(req));
@@ -916,14 +1019,23 @@ impl OsUContext {
 
     /// Non-blocking neighbor allgather (ring topology).
     /// Each rank sends to and receives from its neighbors only.
-    pub fn ineighbor_allgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
+    pub fn ineighbor_allgather(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        msg_size: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
             let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
             recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
-            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+            return OsURequest {
+                recv_reqs: Vec::new(),
+                worker: std::ptr::null(),
+                remaining: 0,
+            };
         }
 
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -936,13 +1048,18 @@ impl OsUContext {
         // Copy own contribution into recvbuf
         let my_offset = rank * msg_size;
         if my_offset + msg_size <= recvbuf.len() {
-            recvbuf[my_offset..my_offset + msg_size].copy_from_slice(&sendbuf[..msg_size.min(sendbuf.len())]);
+            recvbuf[my_offset..my_offset + msg_size]
+                .copy_from_slice(&sendbuf[..msg_size.min(sendbuf.len())]);
         }
 
         // Post sends to destinations
         for &dst in &destinations {
             self.endpoint(dst)
-                .tag_send(&sendbuf[..msg_size.min(sendbuf.len())], NHBR_ALLGATHER_TAG, &tag_param)
+                .tag_send(
+                    &sendbuf[..msg_size.min(sendbuf.len())],
+                    NHBR_ALLGATHER_TAG,
+                    &tag_param,
+                )
                 .expect("ineighbor_allgather send");
         }
 
@@ -950,7 +1067,8 @@ impl OsUContext {
         let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
         for &src in &sources {
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, NHBR_ALLGATHER_TAG, TAG_MASK, &tag_param)
                 .expect("ineighbor_allgather recv")
                 .expect("ineighbor_allgather recv request");
@@ -965,18 +1083,30 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor allgatherv (ring topology).
-    pub fn ineighbor_allgatherv(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize], displs: &[usize]) -> OsURequest {
+    pub fn ineighbor_allgatherv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        counts: &[usize],
+        displs: &[usize],
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
             let offset = displs.get(rank).copied().unwrap_or(0);
             let len = counts.get(rank).copied().unwrap_or(0);
-            let copy_len = len.min(sendbuf.len()).min(recvbuf.len().saturating_sub(offset));
+            let copy_len = len
+                .min(sendbuf.len())
+                .min(recvbuf.len().saturating_sub(offset));
             if copy_len > 0 {
                 recvbuf[offset..offset + copy_len].copy_from_slice(&sendbuf[..copy_len]);
             }
-            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+            return OsURequest {
+                recv_reqs: Vec::new(),
+                worker: std::ptr::null(),
+                remaining: 0,
+            };
         }
 
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -990,14 +1120,19 @@ impl OsUContext {
         let my_offset = displs.get(rank).copied().unwrap_or(0);
         let my_len = counts.get(rank).copied().unwrap_or(0);
         if my_offset + my_len <= recvbuf.len() {
-            recvbuf[my_offset..my_offset + my_len].copy_from_slice(&sendbuf[..my_len.min(sendbuf.len())]);
+            recvbuf[my_offset..my_offset + my_len]
+                .copy_from_slice(&sendbuf[..my_len.min(sendbuf.len())]);
         }
 
         // Post sends to destinations
         for &dst in &destinations {
             let len = counts.get(rank).copied().unwrap_or(0);
             self.endpoint(dst)
-                .tag_send(&sendbuf[..len.min(sendbuf.len())], NHBR_ALLGATHERV_TAG, &tag_param)
+                .tag_send(
+                    &sendbuf[..len.min(sendbuf.len())],
+                    NHBR_ALLGATHERV_TAG,
+                    &tag_param,
+                )
                 .expect("ineighbor_allgatherv send");
         }
 
@@ -1006,7 +1141,8 @@ impl OsUContext {
         for &src in &sources {
             let len = counts.get(src).copied().unwrap_or(0);
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, NHBR_ALLGATHERV_TAG, TAG_MASK, &tag_param)
                 .expect("ineighbor_allgatherv recv")
                 .expect("ineighbor_allgatherv recv request");
@@ -1021,14 +1157,23 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor alltoall (ring topology).
-    pub fn ineighbor_alltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
+    pub fn ineighbor_alltoall(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        msg_size: usize,
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
             let copy_len = msg_size.min(sendbuf.len()).min(recvbuf.len());
             recvbuf[..copy_len].copy_from_slice(&sendbuf[..copy_len]);
-            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+            return OsURequest {
+                recv_reqs: Vec::new(),
+                worker: std::ptr::null(),
+                remaining: 0,
+            };
         }
 
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -1053,7 +1198,8 @@ impl OsUContext {
         let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
         for &src in &sources {
             let mut recv_buf = vec![0u8; msg_size];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, NHBR_ALLTOALL_TAG, TAG_MASK, &tag_param)
                 .expect("ineighbor_alltoall recv")
                 .expect("ineighbor_alltoall recv request");
@@ -1068,7 +1214,15 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor alltoallv (ring topology).
-    pub fn ineighbor_alltoallv(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
+    pub fn ineighbor_alltoallv(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        recv_counts: &[usize],
+        send_displs: &[usize],
+        recv_displs: &[usize],
+    ) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
 
@@ -1077,12 +1231,19 @@ impl OsUContext {
                 let src_off = send_displs.get(p).copied().unwrap_or(0);
                 let dst_off = recv_displs.get(p).copied().unwrap_or(0);
                 let len = send_counts.get(p).copied().unwrap_or(0);
-                let copy = len.min(sendbuf.len().saturating_sub(src_off)).min(recvbuf.len().saturating_sub(dst_off));
+                let copy = len
+                    .min(sendbuf.len().saturating_sub(src_off))
+                    .min(recvbuf.len().saturating_sub(dst_off));
                 if copy > 0 {
-                    recvbuf[dst_off..dst_off + copy].copy_from_slice(&sendbuf[src_off..src_off + copy]);
+                    recvbuf[dst_off..dst_off + copy]
+                        .copy_from_slice(&sendbuf[src_off..src_off + copy]);
                 }
             }
-            return OsURequest { recv_reqs: Vec::new(), worker: std::ptr::null(), remaining: 0 };
+            return OsURequest {
+                recv_reqs: Vec::new(),
+                worker: std::ptr::null(),
+                remaining: 0,
+            };
         }
 
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -1109,7 +1270,8 @@ impl OsUContext {
         for &src in &sources {
             let len = recv_counts.get(src).copied().unwrap_or(0);
             let mut recv_buf = vec![0u8; len];
-            let req = self.worker()
+            let req = self
+                .worker()
                 .tag_recv(&mut recv_buf, NHBR_ALLTOALLV_TAG, TAG_MASK, &tag_param)
                 .expect("ineighbor_alltoallv recv")
                 .expect("ineighbor_alltoallv recv request");
@@ -1125,7 +1287,22 @@ impl OsUContext {
 
     /// Non-blocking neighbor alltoallw (ring topology).
     /// Same as alltoallv since we only use bytes.
-    pub fn ineighbor_alltoallw(&self, sendbuf: &[u8], recvbuf: &mut [u8], send_counts: &[usize], recv_counts: &[usize], send_displs: &[usize], recv_displs: &[usize]) -> OsURequest {
-        self.ineighbor_alltoallv(sendbuf, recvbuf, send_counts, recv_counts, send_displs, recv_displs)
+    pub fn ineighbor_alltoallw(
+        &self,
+        sendbuf: &[u8],
+        recvbuf: &mut [u8],
+        send_counts: &[usize],
+        recv_counts: &[usize],
+        send_displs: &[usize],
+        recv_displs: &[usize],
+    ) -> OsURequest {
+        self.ineighbor_alltoallv(
+            sendbuf,
+            recvbuf,
+            send_counts,
+            recv_counts,
+            send_displs,
+            recv_displs,
+        )
     }
 }

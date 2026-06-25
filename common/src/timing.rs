@@ -133,11 +133,7 @@ impl TimingResult {
 
     /// Get the average time, or 0.0 if no samples.
     pub fn average(&self) -> f64 {
-        if self.count == 0 {
-            0.0
-        } else {
-            self.avg_us
-        }
+        if self.count == 0 { 0.0 } else { self.avg_us }
     }
 }
 

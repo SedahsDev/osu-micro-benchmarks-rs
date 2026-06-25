@@ -142,7 +142,8 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
     let mut recv_buf = vec![0u8; msg_size];
     for peer in 0..size {
         if peer != rank {
-            let req = ctx.worker()
+            let req = ctx
+                .worker()
                 .tag_recv(&mut recv_buf, ALLREDUCE_TAG, TAG_MASK, &tag_param)
                 .expect("allreduce recv")
                 .expect("allreduce recv request");

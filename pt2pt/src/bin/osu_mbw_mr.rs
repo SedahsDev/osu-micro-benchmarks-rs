@@ -65,9 +65,14 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         // Skip warmup iterations
         for _ in 0..skip {
             do_mbw_mr_iteration(
-                rank, ep, worker, &tag_param,
-                &send_buf, &mut recv_buf,
-                &ack_send, &mut ack_recv,
+                rank,
+                ep,
+                worker,
+                &tag_param,
+                &send_buf,
+                &mut recv_buf,
+                &ack_send,
+                &mut ack_recv,
                 window_size,
             );
         }
@@ -77,9 +82,14 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
             let start = Wtime::new();
 
             do_mbw_mr_iteration(
-                rank, ep, worker, &tag_param,
-                &send_buf, &mut recv_buf,
-                &ack_send, &mut ack_recv,
+                rank,
+                ep,
+                worker,
+                &tag_param,
+                &send_buf,
+                &mut recv_buf,
+                &ack_send,
+                &mut ack_recv,
                 window_size,
             );
 
@@ -120,7 +130,8 @@ fn do_mbw_mr_iteration(
         // Sender: post window of sends
         let mut send_reqs: Vec<ucx_sys::Request> = Vec::new();
         for _ in 0..window_size {
-            let req = ep.tag_send(send_buf, DATA_TAG, tag_param)
+            let req = ep
+                .tag_send(send_buf, DATA_TAG, tag_param)
                 .expect("tag_send");
             if let Some(r) = req {
                 send_reqs.push(r);
@@ -135,7 +146,8 @@ fn do_mbw_mr_iteration(
         }
 
         // Receive 1-byte ACK from rank 1
-        let ack_req = worker.tag_recv(ack_recv, ACK_TAG, u64::MAX, tag_param)
+        let ack_req = worker
+            .tag_recv(ack_recv, ACK_TAG, u64::MAX, tag_param)
             .expect("ack_recv")
             .expect("ack request");
         while !ack_req.check_finished().unwrap_or(false) {
@@ -145,7 +157,8 @@ fn do_mbw_mr_iteration(
         // Receiver: post window of receives (multi-buffer)
         let mut recv_reqs: Vec<ucx_sys::Request> = Vec::new();
         for _ in 0..window_size {
-            let req = worker.tag_recv(recv_buf, DATA_TAG, u64::MAX, tag_param)
+            let req = worker
+                .tag_recv(recv_buf, DATA_TAG, u64::MAX, tag_param)
                 .expect("tag_recv")
                 .expect("recv request");
             recv_reqs.push(req);
@@ -199,7 +212,11 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "Multi-Buffer Multi-Recv Bandwidth", BenchmarkType::Bandwidth);
+        output::print_header(
+            &mut out,
+            "Multi-Buffer Multi-Recv Bandwidth",
+            BenchmarkType::Bandwidth,
+        );
         output::print_bandwidth_header(&mut out);
     }
 

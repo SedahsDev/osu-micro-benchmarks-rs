@@ -55,7 +55,14 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
         // Warmup iterations
         for _ in 0..skip {
-            ctx.alltoallv(send_slice, recv_slice, &sendcounts, &sdispls, &recvcounts, &rdispls);
+            ctx.alltoallv(
+                send_slice,
+                recv_slice,
+                &sendcounts,
+                &sdispls,
+                &recvcounts,
+                &rdispls,
+            );
             ctx.barrier();
         }
 
@@ -64,7 +71,14 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         // Timed iterations
         for _ in 0..iterations {
             let t_start = Wtime::new();
-            ctx.alltoallv(send_slice, recv_slice, &sendcounts, &sdispls, &recvcounts, &rdispls);
+            ctx.alltoallv(
+                send_slice,
+                recv_slice,
+                &sendcounts,
+                &sdispls,
+                &recvcounts,
+                &rdispls,
+            );
             let elapsed_us = t_start.elapsed_us();
             // Barrier after each iteration to synchronize
             ctx.barrier();
@@ -113,7 +127,11 @@ fn main() {
     if ctx.rank() == 0 {
         let stdout = io::stdout();
         let mut out = stdout.lock();
-        output::print_header(&mut out, "All-to-Allv Personalized Exchange Latency", BenchmarkType::CollectiveLatency);
+        output::print_header(
+            &mut out,
+            "All-to-Allv Personalized Exchange Latency",
+            BenchmarkType::CollectiveLatency,
+        );
         output::print_latency_header(&mut out);
     }
 
