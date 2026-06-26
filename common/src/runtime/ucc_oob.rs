@@ -1,7 +1,8 @@
 //! UCC initialization and OOB (out-of-band) callbacks.
 //!
-//! UCC is temporarily disabled — team creation segfaults. This module is kept
-//! for future re-enablement once the segfault is resolved.
+//! Wires UCC library → context → team with UCX-based OOB allgather callbacks.
+//! The OOB callbacks use thread-local storage to access the UCX worker and
+//! endpoints during UCC context/team creation.
 
 use std::cell::RefCell;
 use std::os::raw::c_void;
@@ -10,25 +11,109 @@ use ucx_sys::RequestParamBuilder;
 use ucx_sys::ep;
 use ucx_sys::worker;
 
+use ucc::bindings::ucc_oob_coll_t;
+use ucc::context::UccContext;
+use ucc::context::UccContextParams;
+use ucc::lib_init::UccLib;
+use ucc::team::UccTeam;
+use ucc::team::UccTeamParams;
+
 use crate::runtime::constants::*;
 
 /// Initialize UCC library, context, and team.
 ///
-/// TEMPORARILY DISABLED: UCC team creation segfaults on subsequent collective
-/// calls (OOB callback crashes after first call). Return None so all collectives
-/// use the UCX fallback methods.
-#[allow(unused_variables)]
+/// Steps:
+/// 1. Store UCX worker + endpoints in thread-local OOB state
+/// 2. Initialize UCC library
+/// 3. Create UCC context with OOB allgather callback (uses UCX tag matching)
+/// 4. Create UCC team with OOB callback for multi-process team setup
+///
+/// Returns None gracefully if any step fails — benchmarks fall back to UCX.
 pub fn init_ucc(
-    _worker: &worker::Worker,
-    _endpoints: &[ep::Ep],
+    worker: &worker::Worker,
+    endpoints: &[ep::Ep],
     rank: usize,
     size: usize,
 ) -> Option<ucc::team::UccTeam> {
+    eprintln!("[osu] Initializing UCC — rank={}, size={}", rank, size);
+
+    // 1. Store worker + endpoints in thread-local state for OOB callbacks
+    OOB_STATE.with(|state| {
+        let mut s = state.borrow_mut();
+        s.worker = worker as *const worker::Worker;
+        s.endpoints_ptr = endpoints.as_ptr();
+        s.endpoints_len = endpoints.len();
+        s.rank = rank;
+    });
+
+    // 2. Build OOB callback struct
+    let oob_coll = build_oob_coll(rank, size);
+
+    // 3. Initialize UCC library
+    let lib = match UccLib::init() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[osu] UCC lib init failed: {:?} — falling back to UCX", e);
+            return None;
+        }
+    };
+
+    // 4. Create UCC context with OOB callbacks
+    let mut ctx_params = UccContextParams::default();
+    ctx_params.with_oob(oob_coll);
+    let ctx = match UccContext::new(lib) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[osu] UCC context create failed: {:?} — falling back to UCX",
+                e
+            );
+            return None;
+        }
+    };
+
+    // 5. Create UCC team
+    // For single-process mode, use EP=rank + team_size=size
+    let mut team_params = UccTeamParams::default();
+    team_params.with_team_size(size as u64);
+    // Set EP and OOB for team creation
+    team_params.inner_mut().ep = rank as u64;
+    team_params.inner_mut().oob = oob_coll;
+    team_params.inner_mut().mask |=
+        ucc::bindings::ucc_team_params_field_UCC_TEAM_PARAM_FIELD_EP as u64;
+    team_params.inner_mut().mask |=
+        ucc::bindings::ucc_team_params_field_UCC_TEAM_PARAM_FIELD_OOB as u64;
+
+    let team = match UccTeam::with_params(ctx, team_params) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "[osu] UCC team create failed: {:?} — falling back to UCX",
+                e
+            );
+            return None;
+        }
+    };
+
     eprintln!(
-        "[osu] UCC team creation disabled (segfault workaround) — rank={}, size={}",
-        rank, size
+        "[osu] UCC ready — rank={}, size={}, team={:?}",
+        rank,
+        size,
+        team.handle()
     );
-    None
+    Some(team)
+}
+
+/// Build the OOB callback struct with proper function pointers and metadata.
+fn build_oob_coll(rank: usize, size: usize) -> ucc_oob_coll_t {
+    ucc_oob_coll_t {
+        allgather: Some(ucc_oob_allgather),
+        req_test: Some(ucc_oob_req_test),
+        req_free: Some(ucc_oob_req_free),
+        coll_info: std::ptr::null_mut(),
+        n_oob_eps: size as u32,
+        oob_ep: rank as u32,
+    }
 }
 
 // ── Thread-local state for OOB callbacks ──
