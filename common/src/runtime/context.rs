@@ -1,4 +1,9 @@
 //! OsUContext struct and initialization logic.
+//!
+//! `needless_range_loop` is allowed because `for peer in 0..size` is the
+//! idiomatic MPI-style rank iteration pattern used throughout this module.
+
+#![allow(clippy::needless_range_loop)]
 
 use std::ffi::CString;
 
@@ -95,7 +100,7 @@ impl OsUContext {
 
         // 7. Commit + Fence (barrier + data exchange)
         commit().expect("PMIx_Commit");
-        fence(&my_proc, None).expect("PMIx_Fence");
+        fence(my_proc, None).expect("PMIx_Fence");
 
         // 8. Retrieve peer addresses via PMIx_Get
         let mut peer_addrs: Vec<Vec<u8>> = vec![Vec::new(); size];

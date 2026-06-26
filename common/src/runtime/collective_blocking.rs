@@ -1,4 +1,9 @@
 //! Blocking collective operations implemented via UCX tag-matching fallback.
+//!
+//! `needless_range_loop` is allowed because `for peer in 0..size` is the
+//! idiomatic MPI-style rank iteration pattern used throughout this module.
+
+#![allow(clippy::needless_range_loop)]
 
 use ucx_sys::RequestParamBuilder;
 
@@ -79,7 +84,7 @@ impl OsUContext {
         }
         gathered
             .into_iter()
-            .map(|b| f64::from_bits(b))
+            .map(f64::from_bits)
             .fold(f64::INFINITY, f64::min)
     }
 
@@ -119,7 +124,7 @@ impl OsUContext {
         }
         gathered
             .into_iter()
-            .map(|b| f64::from_bits(b))
+            .map(f64::from_bits)
             .fold(f64::NEG_INFINITY, f64::max)
     }
 
@@ -157,7 +162,7 @@ impl OsUContext {
                 gathered[peer] = u64::from_le_bytes(recv_buf);
             }
         }
-        gathered.into_iter().map(|b| f64::from_bits(b)).sum()
+        gathered.into_iter().map(f64::from_bits).sum()
     }
 
     /// Allreduce a u64 value using UCX tag matching (ring algorithm).
@@ -283,9 +288,7 @@ impl OsUContext {
 
         if rank == root {
             for i in 0..msg_size {
-                let sum: u16 = (0..size as usize)
-                    .map(|r| gathered[r * msg_size + i] as u16)
-                    .sum();
+                let sum: u16 = (0..size).map(|r| gathered[r * msg_size + i] as u16).sum();
                 recvbuf[i] = (sum % 256) as u8;
             }
         }
@@ -507,7 +510,7 @@ impl OsUContext {
             let req = self
                 .endpoint(root)
                 .tag_send(sendbuf, GATHERV_TAG, &tag_param);
-            if let Ok(Some(mut req)) = req {
+            if let Ok(Some(req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -533,7 +536,7 @@ impl OsUContext {
                 let req = self
                     .worker()
                     .tag_recv(&mut recv_buf, GATHERV_TAG, TAG_MASK, &tag_param);
-                if let Ok(Some(mut req)) = req {
+                if let Ok(Some(req)) = req {
                     while !req.check_finished().unwrap_or(false) {
                         self.progress();
                     }
@@ -591,7 +594,7 @@ impl OsUContext {
                         SCATTERV_TAG,
                         &tag_param,
                     );
-                    if let Ok(Some(mut req)) = req {
+                    if let Ok(Some(req)) = req {
                         while !req.check_finished().unwrap_or(false) {
                             self.progress();
                         }
@@ -606,7 +609,7 @@ impl OsUContext {
             let req = self
                 .worker()
                 .tag_recv(recvbuf, SCATTERV_TAG, TAG_MASK, &tag_param);
-            if let Ok(Some(mut req)) = req {
+            if let Ok(Some(req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -676,7 +679,7 @@ impl OsUContext {
             let req = self
                 .endpoint(peer)
                 .tag_send(sendbuf, ALLGATHERV_TAG, &tag_param);
-            if let Ok(Some(mut req)) = req {
+            if let Ok(Some(req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -688,7 +691,7 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            if let Some(mut req) = recv_reqs[peer].take() {
+            if let Some(req) = recv_reqs[peer].take() {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -777,7 +780,7 @@ impl OsUContext {
                     ALLTOALLV_TAG,
                     &tag_param,
                 );
-                if let Ok(Some(mut req)) = req {
+                if let Ok(Some(req)) = req {
                     while !req.check_finished().unwrap_or(false) {
                         self.progress();
                     }
@@ -790,7 +793,7 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            if let Some(mut req) = recv_reqs[peer].take() {
+            if let Some(req) = recv_reqs[peer].take() {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -1113,7 +1116,7 @@ impl OsUContext {
             let req = self
                 .endpoint(peer)
                 .tag_send(sendbuf, REDUCE_SCATTER_BLOCK_TAG, &tag_param);
-            if let Ok(Some(mut req)) = req {
+            if let Ok(Some(req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -1124,7 +1127,7 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            if let Some(mut req) = recv_reqs[peer].take() {
+            if let Some(req) = recv_reqs[peer].take() {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -1192,7 +1195,7 @@ impl OsUContext {
             let req = self
                 .endpoint(peer)
                 .tag_send(sendbuf, REDUCESCATTER_TAG, &tag_param);
-            if let Ok(Some(mut req)) = req {
+            if let Ok(Some(req)) = req {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }
@@ -1203,7 +1206,7 @@ impl OsUContext {
             if peer == rank {
                 continue;
             }
-            if let Some(mut req) = recv_reqs[peer].take() {
+            if let Some(req) = recv_reqs[peer].take() {
                 while !req.check_finished().unwrap_or(false) {
                     self.progress();
                 }

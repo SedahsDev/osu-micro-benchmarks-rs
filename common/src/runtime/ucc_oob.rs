@@ -1,6 +1,11 @@
 //! UCC initialization and OOB (out-of-band) callbacks.
 //!
+//! `needless_range_loop` is allowed because `for peer in 0..n_eps` is the
+//! idiomatic MPI-style rank iteration pattern used throughout this module.
+//!
 //! Wires UCC library → context → team with UCX-based OOB allgather callbacks.
+
+#![allow(clippy::needless_range_loop)]
 //! The OOB callbacks use thread-local storage to access the UCX worker and
 //! endpoints during UCC context/team creation.
 
@@ -286,7 +291,7 @@ unsafe extern "C" fn ucc_oob_allgather(
                 if peer == my_rank {
                     continue;
                 }
-                if let Some(mut req) = recv_reqs[peer].take() {
+                if let Some(req) = recv_reqs[peer].take() {
                     while !req.check_finished().unwrap_or(false) {
                         let _ = worker.progress();
                     }
@@ -311,12 +316,8 @@ unsafe extern "C" fn ucc_oob_allgather(
 
 /// UCC OOB request test callback.
 #[allow(unused_variables)]
-unsafe extern "C" fn ucc_oob_req_test(request: *mut c_void) -> ucc::ucc_status_t {
-    if request.is_null() {
-        ucc::ucc_status_t_UCC_OK
-    } else {
-        ucc::ucc_status_t_UCC_OK
-    }
+unsafe extern "C" fn ucc_oob_req_test(_request: *mut c_void) -> ucc::ucc_status_t {
+    ucc::ucc_status_t_UCC_OK
 }
 
 /// UCC OOB request free callback.

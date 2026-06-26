@@ -254,20 +254,12 @@ impl CliArgs {
     }
 
     /// Get iterations for a given message size (small vs large cutoff).
-    pub fn get_iterations(&self, msg_size: usize) -> usize {
-        if msg_size <= LARGE_MESSAGE_SIZE {
-            self.iterations
-        } else {
-            self.iterations
-        }
+    pub fn get_iterations(&self, _msg_size: usize) -> usize {
+        self.iterations
     }
 
     /// Get skip count for a given message size.
-    pub fn get_skip(&self, msg_size: usize) -> usize {
-        if msg_size <= LARGE_MESSAGE_SIZE {
-            self.skip
-        } else {
-            self.skip
-        }
+    pub fn get_skip(&self, _msg_size: usize) -> usize {
+        self.skip
     }
 }

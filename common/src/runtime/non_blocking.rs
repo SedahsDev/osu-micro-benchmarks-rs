@@ -1,7 +1,12 @@
 //! Non-blocking collective operations using UCX tag matching.
 //!
+//! `needless_range_loop` is allowed because `for peer in 0..size` is the
+//! idiomatic MPI-style rank iteration pattern used throughout this module.
+//!
 //! Provides `OsURequest` as the request handle for non-blocking collectives,
 //! and `i*` methods on `OsUContext` that return `OsURequest` handles.
+
+#![allow(clippy::needless_range_loop)]
 
 use ucx_sys::RequestParamBuilder;
 
@@ -30,12 +35,11 @@ impl OsURequest {
         let worker = unsafe { &*self.worker };
 
         for req_opt in self.recv_reqs.iter_mut() {
-            if let Some(req) = req_opt {
-                if req.check_finished().unwrap_or(false) {
-                    if req_opt.take().is_some() {
-                        self.remaining -= 1;
-                    }
-                }
+            if let Some(req) = req_opt
+                && req.check_finished().unwrap_or(false)
+                && req_opt.take().is_some()
+            {
+                self.remaining -= 1;
             }
         }
 
@@ -280,7 +284,7 @@ impl OsUContext {
         &self,
         sendbuf: &[u8],
         recvbuf: &mut [u8],
-        root: usize,
+        _root: usize,
         msg_size: usize,
     ) -> OsURequest {
         let rank = self.rank;
@@ -395,8 +399,7 @@ impl OsUContext {
                 .expect("iscatter recv")
                 .expect("iscatter recv request");
 
-            let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(1);
-            recv_reqs.push(Some(req));
+            let recv_reqs: Vec<Option<ucx_sys::Request>> = vec![Some(req)];
 
             OsURequest {
                 recv_reqs,
@@ -749,8 +752,7 @@ impl OsUContext {
                 .expect("iscatterv recv")
                 .expect("iscatterv recv request");
 
-            let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(1);
-            recv_reqs.push(Some(req));
+            let recv_reqs: Vec<Option<ucx_sys::Request>> = vec![Some(req)];
 
             OsURequest {
                 recv_reqs,
@@ -1065,7 +1067,7 @@ impl OsUContext {
 
         // Post receives from sources
         let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
-        for &src in &sources {
+        for &_src in &sources {
             let mut recv_buf = vec![0u8; msg_size];
             let req = self
                 .worker()
@@ -1163,7 +1165,7 @@ impl OsUContext {
         recvbuf: &mut [u8],
         msg_size: usize,
     ) -> OsURequest {
-        let rank = self.rank;
+        let _rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
@@ -1196,7 +1198,7 @@ impl OsUContext {
 
         // Post receives from sources
         let mut recv_reqs: Vec<Option<ucx_sys::Request>> = Vec::with_capacity(num_neighbors);
-        for &src in &sources {
+        for &_src in &sources {
             let mut recv_buf = vec![0u8; msg_size];
             let req = self
                 .worker()
@@ -1223,7 +1225,7 @@ impl OsUContext {
         send_displs: &[usize],
         recv_displs: &[usize],
     ) -> OsURequest {
-        let rank = self.rank;
+        let _rank = self.rank;
         let size = self.size;
 
         if size <= 1 {
