@@ -56,16 +56,14 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let mut timer: f64 = 0.0;
 
         // Timed iterations
-        for i in 0..iterations {
+        for _ in 0..iterations {
             let t_start = Wtime::new();
             allreduce_blocking(ctx, send_slice, recv_slice, msg_size);
             let elapsed_us = t_start.elapsed_us();
             // Barrier after each iteration to synchronize
             ctx.barrier();
 
-            if i >= 0 {
-                timer += elapsed_us;
-            }
+            timer += elapsed_us;
         }
 
         let latency = timer / iterations as f64;
@@ -89,7 +87,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 fn allreduce_blocking(ctx: &OsUContext, sendbuf: &mut [u8], recvbuf: &mut [u8], msg_size: usize) {
     if let Some(team) = ctx.ucc_team() {
         // Use UCC allreduce with CHAR datatype
-        let mut req = match team.allreduce(sendbuf, DataType::Uchar, ReductionOp::Sum) {
+        let req = match team.allreduce(sendbuf, DataType::Uchar, ReductionOp::Sum) {
             Ok(req) => req,
             Err(_) => {
                 // UCC failed, fall back to UCX
