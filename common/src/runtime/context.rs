@@ -128,13 +128,13 @@ impl OsUContext {
             if peer == rank {
                 let own_remote_addr = RemoteWorkerAddress::new(own_addr_bytes.clone());
                 let ep_params = ep::ParamsBuilder::new().address(&own_remote_addr).build();
-                let ep = worker.create_ep(&ep_params).expect("Self EP create");
+                let ep = worker.create_ep(ep_params).expect("Self EP create");
                 endpoints.push(ep);
                 continue;
             }
             let remote_addr = RemoteWorkerAddress::new(peer_addrs[peer].clone());
             let ep_params = ep::ParamsBuilder::new().address(&remote_addr).build();
-            let ep = worker.create_ep(&ep_params).expect("EP create for peer");
+            let ep = worker.create_ep(ep_params).expect("EP create for peer");
             endpoints.push(ep);
         }
 
