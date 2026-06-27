@@ -36,8 +36,8 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
         // Initialize send buffer on root
         if rank == 0 {
-            for i in 0..msg_size * size {
-                sendbuf[i] = (i % 256) as u8;
+            for (i, item) in sendbuf.iter_mut().enumerate().take(msg_size * size) {
+                *item = (i % 256) as u8;
             }
         }
 

@@ -42,8 +42,8 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let per_rank = msg_size / size;
 
         // Initialize send buffer: each byte = rank + 1
-        for i in 0..msg_size {
-            sendbuf[i] = (rank + 1) as u8;
+        for item in sendbuf.iter_mut().take(msg_size) {
+            *item = (rank + 1) as u8;
         }
 
         // Build uniform recvcounts

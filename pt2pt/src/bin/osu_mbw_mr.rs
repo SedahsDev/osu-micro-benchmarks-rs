@@ -115,6 +115,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 ///
 /// Rank 0: posts window of sends, waits, receives ACK.
 /// Rank 1: posts window of receives, waits, sends ACK.
+#[allow(clippy::too_many_arguments)]
 fn do_mbw_mr_iteration(
     rank: usize,
     ep: &ucx_sys::ep::Ep,

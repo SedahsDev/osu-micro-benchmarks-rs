@@ -110,7 +110,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
         if rank == 0 {
             // Latency = total_time / (2 * iterations) — divide by 2 for one-way
-            let latency_us = total_elapsed as f64 / (2.0 * iterations as f64);
+            let latency_us = total_elapsed / (2.0 * iterations as f64);
 
             let stdout = io::stdout();
             let mut out = stdout.lock();

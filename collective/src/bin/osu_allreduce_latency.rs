@@ -43,8 +43,8 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let skip = args.get_skip(msg_size);
 
         // Initialize send buffer: each byte = rank + 1 (for validation-like pattern)
-        for i in 0..msg_size {
-            sendbuf[i] = (rank + 1) as u8;
+        for item in sendbuf.iter_mut().take(msg_size) {
+            *item = (rank + 1) as u8;
         }
 
         // Use the slice for this message size
@@ -135,9 +135,7 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
 
     // Perform local sum (mod 256 for u8)
     for i in 0..msg_size {
-        let sum: u16 = (0..size as usize)
-            .map(|r| gathered[r * msg_size + i] as u16)
-            .sum();
+        let sum: u16 = (0..size).map(|r| gathered[r * msg_size + i] as u16).sum();
         recvbuf[i] = (sum % 256) as u8;
     }
 }

@@ -121,6 +121,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 ///
 /// Rank 0: sends window_size messages, waits, receives ACK.
 /// Rank 1: receives window_size messages, waits, sends ACK.
+#[allow(clippy::too_many_arguments)]
 fn do_bw_iteration(
     rank: usize,
     ep: &ucx_sys::ep::Ep,

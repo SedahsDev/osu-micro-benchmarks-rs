@@ -35,8 +35,8 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         let skip = args.get_skip(msg_size);
 
         // Initialize send buffer
-        for i in 0..msg_size {
-            sendbuf[i] = (rank + 1) as u8;
+        for item in sendbuf.iter_mut().take(msg_size) {
+            *item = (rank + 1) as u8;
         }
 
         // Build uniform recvcounts and rdispls
