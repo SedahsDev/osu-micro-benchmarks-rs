@@ -154,9 +154,9 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
     }
 
     // Perform local sum
-    for i in 0..msg_size {
+    for (i, item) in recvbuf.iter_mut().enumerate().take(msg_size) {
         let sum: u16 = (0..size).map(|r| gathered[r * msg_size + i] as u16).sum();
-        recvbuf[i] = (sum % 256) as u8;
+        *item = (sum % 256) as u8;
     }
 }
 
