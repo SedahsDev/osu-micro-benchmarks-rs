@@ -108,7 +108,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
 fn main() {
     let args = CliArgs::parse();
-    let ctx = OsUContext::init();
+    let ctx = OsUContext::init(args.ucc_backend());
 
     if ctx.rank() == 0 {
         let stdout = io::stdout();

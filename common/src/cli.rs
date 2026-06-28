@@ -245,9 +245,29 @@ pub struct CliArgs {
     /// Run with MPI_IN_PLACE
     #[arg(short = 'l', long = "inplace")]
     pub inplace: bool,
+
+    /// Force UCC backend for collective operations (default: auto-detect)
+    #[arg(long = "ucc", conflicts_with = "no_ucc")]
+    pub ucc: bool,
+
+    /// Disable UCC backend — use UCX tag-matching fallback only
+    #[arg(long = "no-ucc", conflicts_with = "ucc")]
+    pub no_ucc: bool,
 }
 
 impl CliArgs {
+    /// Whether UCC backend should be used for collectives.
+    /// `true` = use UCC, `false` = UCX fallback only, `None` = auto-detect.
+    pub fn ucc_backend(&self) -> Option<bool> {
+        if self.ucc {
+            Some(true)
+        } else if self.no_ucc {
+            Some(false)
+        } else {
+            None // auto-detect
+        }
+    }
+
     /// Parse CLI arguments from std::env::args().
     pub fn parse() -> Self {
         Self::parse_from(std::env::args_os())

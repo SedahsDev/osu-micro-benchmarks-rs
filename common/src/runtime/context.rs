@@ -42,7 +42,12 @@ pub struct OsUContext {
 
 impl OsUContext {
     /// Create a new unified context.
-    pub fn init() -> Self {
+    ///
+    /// `ucc_backend` controls UCC initialization:
+    /// - `Some(true)`  — force UCC, panic if it fails
+    /// - `Some(false)` — skip UCC entirely, UCX fallback only
+    /// - `None`        — auto-detect (try UCC, fall back to UCX on failure)
+    pub fn init(ucc_backend: Option<bool>) -> Self {
         // 1. Initialize PMIx — gets our rank
         let pmix_ctx = init(None).expect("PMIx init");
         let rank = pmix_ctx.get_rank() as usize;
@@ -153,8 +158,34 @@ impl OsUContext {
 
         eprintln!("[osu] UCX ready (rank={}, size={})", rank, size);
 
-        // 12. Initialize UCC library, context, and team
-        let ucc_team = init_ucc(&worker, &endpoints, rank, size);
+        // 12. Initialize UCC library, context, and team (conditional)
+        let ucc_team = match ucc_backend {
+            Some(true) => {
+                eprintln!("[osu] UCC backend: forced on (--ucc)");
+                match init_ucc(&worker, &endpoints, rank, size) {
+                    Some(team) => Some(team),
+                    None => panic!(
+                        "UCC initialization failed but --ucc was specified. \
+                         Try --no-ucc to use UCX fallback, or install UCC library."
+                    ),
+                }
+            }
+            Some(false) => {
+                eprintln!("[osu] UCC backend: disabled (--no-ucc), using UCX fallback only");
+                None
+            }
+            None => {
+                eprintln!("[osu] UCC backend: auto-detect (use --ucc or --no-ucc to override)");
+                init_ucc(&worker, &endpoints, rank, size)
+            }
+        };
+
+        // Report final backend selection
+        if ucc_team.is_some() {
+            eprintln!("[osu] Backend: UCC (collective operations via UCC)");
+        } else {
+            eprintln!("[osu] Backend: UCX (collective operations via tag-matching fallback)");
+        }
 
         OsUContext {
             rank,

@@ -186,7 +186,7 @@ fn main() {
     let args = CliArgs::parse();
 
     // Create the unified runtime context
-    let ctx = OsUContext::init();
+    let ctx = OsUContext::init(args.ucc_backend());
 
     // Print header (only rank 0)
     if ctx.rank() == 0 {
