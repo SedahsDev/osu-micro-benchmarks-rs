@@ -6,4 +6,4 @@ description = "Point-to-point benchmarks for OSU Micro-Benchmarks in Rust"
 
 [dependencies]
 osu-common = { path = "../common" }
-ucx-sys = { path = "../../ucx/bindings/rust" }
+ucx-sys = { path = "../../ucx-rs" }
