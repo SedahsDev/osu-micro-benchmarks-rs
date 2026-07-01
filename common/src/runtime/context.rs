@@ -21,6 +21,48 @@ use crate::runtime::constants::*;
 use crate::runtime::helpers::flush_ep_blocking;
 use crate::runtime::ucc_oob::init_ucc;
 
+/// Backend in use for collective operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// UCC library — native collective operations.
+    Ucc,
+    /// UCX tag-matching fallback for collectives.
+    Ucx,
+}
+
+impl std::fmt::Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Backend::Ucc => write!(f, "UCC"),
+            Backend::Ucx => write!(f, "UCX (tag-matching fallback)"),
+        }
+    }
+}
+
+/// How the backend was selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendSelection {
+    /// User forced UCC with --ucc.
+    ForcedUcc,
+    /// User disabled UCC with --no-ucc.
+    ForcedUcx,
+    /// Auto-detected — tried UCC, succeeded.
+    AutoUcc,
+    /// Auto-detected — UCC unavailable, fell back to UCX.
+    AutoUcx,
+}
+
+impl std::fmt::Display for BackendSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendSelection::ForcedUcc => write!(f, "forced (--ucc)"),
+            BackendSelection::ForcedUcx => write!(f, "forced (--no-ucc)"),
+            BackendSelection::AutoUcc => write!(f, "auto-detected (UCC available)"),
+            BackendSelection::AutoUcx => write!(f, "auto-detected (UCC unavailable, UCX fallback)"),
+        }
+    }
+}
+
 /// Unified OSU benchmark context wrapping PMIx + UCX + UCC.
 ///
 /// Created once at startup and shared across all benchmarks.
@@ -38,6 +80,10 @@ pub struct OsUContext {
     pub _pmix_ctx: Context,
     /// UCC team for collective operations (Some when UCC init succeeded).
     pub ucc_team: Option<ucc::team::UccTeam>,
+    /// Which backend is active for collectives.
+    pub backend: Backend,
+    /// How the backend was selected.
+    pub backend_selection: BackendSelection,
 }
 
 impl OsUContext {
@@ -180,12 +226,28 @@ impl OsUContext {
             }
         };
 
+        // Determine backend and selection based on ucc_backend param and result
+        let (backend, backend_selection) = match ucc_backend {
+            Some(true) => {
+                if ucc_team.is_some() {
+                    (Backend::Ucc, BackendSelection::ForcedUcc)
+                } else {
+                    // Already panicked above, but handle for exhaustiveness
+                    unreachable!("UCC init failed with --ucc — should have panicked")
+                }
+            }
+            Some(false) => (Backend::Ucx, BackendSelection::ForcedUcx),
+            None => {
+                if ucc_team.is_some() {
+                    (Backend::Ucc, BackendSelection::AutoUcc)
+                } else {
+                    (Backend::Ucx, BackendSelection::AutoUcx)
+                }
+            }
+        };
+
         // Report final backend selection
-        if ucc_team.is_some() {
-            eprintln!("[osu] Backend: UCC (collective operations via UCC)");
-        } else {
-            eprintln!("[osu] Backend: UCX (collective operations via tag-matching fallback)");
-        }
+        eprintln!("[osu] Backend: {} ({})", backend, backend_selection);
 
         OsUContext {
             rank,
@@ -195,6 +257,8 @@ impl OsUContext {
             _ucx_context: ucx_context,
             _pmix_ctx: pmix_ctx,
             ucc_team,
+            backend,
+            backend_selection,
         }
     }
 
