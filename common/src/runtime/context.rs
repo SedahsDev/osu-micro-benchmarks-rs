@@ -119,8 +119,11 @@ impl OsUContext {
             });
         eprintln!("[osu] PMIx rank={}, size={}", rank, size);
 
-        // 3. Initialize UCX context — Tag-only for OSU benchmarks
-        let features = context::Flags::Tag;
+        // 3. Initialize UCX context — Tag + RMA + AMO64 + ExportedMemH for full benchmark coverage
+        let features = context::Flags::Tag
+            | context::Flags::Rma
+            | context::Flags::Amo64
+            | context::Flags::ExportedMemH;
         let ctx_params = context::ParamsBuilder::new()
             .features(features)
             .estimated_num_eps(size - 1)
