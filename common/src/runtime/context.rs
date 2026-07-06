@@ -7,9 +7,10 @@
 
 use std::ffi::CString;
 
-use ucx_sys::RequestParamBuilder;
 use ucx_sys::context;
 use ucx_sys::ep;
+use ucx_sys::memh;
+use ucx_sys::rma::RemoteKey;
 use ucx_sys::worker;
 use ucx_sys::worker::RemoteWorkerAddress;
 
@@ -59,7 +60,9 @@ impl std::fmt::Display for BackendSelection {
             BackendSelection::ForcedUcc => write!(f, "forced (--ucc)"),
             BackendSelection::ForcedUcx => write!(f, "forced (--no-ucc)"),
             BackendSelection::AutoUcc => write!(f, "auto-detected (UCC available)"),
-            BackendSelection::AutoUcx => write!(f, "auto-detected (UCC unavailable, UCX fallback)"),
+            BackendSelection::AutoUcx => {
+                write!(f, "auto-detected (UCC unavailable, UCX fallback)")
+            }
         }
     }
 }
@@ -146,6 +149,12 @@ pub struct OsUContext {
     pub backend: Backend,
     /// How the backend was selected.
     pub backend_selection: BackendSelection,
+    /// Remote keys for RMA operations (one per peer, None for self).
+    pub remote_rkeys: Vec<Option<RemoteKey>>,
+    /// Remote memory addresses for RMA target buffers (one per rank).
+    pub remote_mem_addrs: Vec<u64>,
+    /// Own registered memory handle (for RMA targets).
+    pub _memh: Option<memh::MemHandle>,
 }
 
 impl OsUContext {
@@ -155,7 +164,12 @@ impl OsUContext {
     /// - `Some(true)`  — force UCC, panic if it fails
     /// - `Some(false)` — skip UCC entirely, UCX fallback only
     /// - `None`        — auto-detect (try UCC, fall back to UCX on failure)
-    pub fn init(ucc_backend: Option<bool>) -> Self {
+    ///
+    /// `rma_target` is an optional buffer to register for RMA one-sided operations.
+    /// When provided, the buffer is registered with UCX, the rkey is exchanged via
+    /// PMIx, and remote rkeys are unpacked for all peers. This enables one-sided
+    /// benchmarks (osu_put_latency, osu_get_latency, osu_acc_latency).
+    pub fn init_with_rma(ucc_backend: Option<bool>, rma_target: Option<&mut [u8]>) -> Self {
         // 1. Initialize PMIx — gets our rank
         // Pass server URI explicitly (OpenPMIX 6.1.0 ignores env vars for this)
         let pmix_info =
@@ -184,10 +198,9 @@ impl OsUContext {
             });
         eprintln!("[osu] PMIx rank={}, size={}", rank, size);
 
-        // 3. Initialize UCX context — Tag matching only
-        // OSU benchmarks use standard MPI message passing (Send/Recv/Irecv/Isend).
-        // No RMA or AMO operations are needed — those belong in GUPS, not OSU.
-        let features = context::Flags::Tag;
+        // 3. Initialize UCX context — Tag + RMA + ExportedMemH
+        // Tag for point-to-point benchmarks, RMA + ExportedMemH for one-sided benchmarks.
+        let features = context::Flags::Tag | context::Flags::Rma | context::Flags::ExportedMemH;
         let ctx_params = context::ParamsBuilder::new()
             .features(features)
             .estimated_num_eps(size - 1)
@@ -207,7 +220,35 @@ impl OsUContext {
         let packed_addr = worker.pack_address().expect("Worker address pack");
         let own_addr_bytes = packed_addr.to_vec();
 
-        // 6. Publish our address via PMIx_Put
+        // 6. Register RMA target memory (if provided)
+        let (memh, rma_enabled) = if let Some(buf) = rma_target {
+            let mut mem_params = memh::MemMapParamsBuilder::new();
+            mem_params
+                .address(buf.as_mut_ptr() as *mut std::ffi::c_void)
+                .length(buf.len());
+            let handle = memh::MemHandle::map(&ucx_context, &mut mem_params)
+                .expect("RMA memory registration");
+            (Some(handle), true)
+        } else {
+            (None, false)
+        };
+
+        // 7. Pack rkey for RMA target memory (if registered)
+        let own_rkey_data: Option<Vec<u8>> = if let Some(ref handle) = memh {
+            let packed_rkey = memh::pack_rkey(&ucx_context, handle).expect("Rkey pack");
+            Some(packed_rkey.as_bytes().to_vec())
+        } else {
+            None
+        };
+
+        // 8. Get our memory address for RMA (if registered)
+        let own_mem_addr: u64 = if let Some(ref handle) = memh {
+            handle.query().expect("Memh query").address() as u64
+        } else {
+            0
+        };
+
+        // 9. Publish our address via PMIx_Put
         let addr_key = CString::new(PMIX_KEY_UCX_ADDR).unwrap();
         let mut addr_val = PmixValueBuilder::new()
             .byte_object(&own_addr_bytes)
@@ -216,13 +257,38 @@ impl OsUContext {
             .expect("build addr");
         put_value(GLOBAL, &addr_key, &mut addr_val).expect("PMIx_Put addr");
 
-        // 7. Commit + Fence (barrier + data exchange)
+        // 10. Publish RMA data (if applicable)
+        if let Some(ref rkey_bytes) = own_rkey_data {
+            let rkey_key = CString::new(PMIX_KEY_RKEY).unwrap();
+            let mut rkey_val = PmixValueBuilder::new()
+                .byte_object(rkey_bytes)
+                .expect("byte_object rkey")
+                .build()
+                .expect("build rkey");
+            put_value(GLOBAL, &rkey_key, &mut rkey_val).expect("PMIx_Put rkey");
+        }
+        if let Some(handle) = &memh {
+            let mem_addr = handle.query().expect("Memh query").address() as u64;
+            let mem_key = CString::new(PMIX_KEY_MEM_ADDR).unwrap();
+            let mut mem_val = PmixValueBuilder::new()
+                .uint64(mem_addr)
+                .build()
+                .expect("build mem_addr");
+            put_value(GLOBAL, &mem_key, &mut mem_val).expect("PMIx_Put mem_addr");
+        }
+
+        // 11. Commit + Fence (barrier + data exchange)
         commit().expect("PMIx_Commit");
         fence(my_proc, None).expect("PMIx_Fence");
 
-        // 8. Retrieve peer addresses via PMIx_Get
+        // 12. Retrieve peer addresses via PMIx_Get
         let mut peer_addrs: Vec<Vec<u8>> = vec![Vec::new(); size];
         peer_addrs[rank] = own_addr_bytes.clone();
+
+        // 13. Retrieve peer RMA data via PMIx_Get
+        let mut peer_rkey_data: Vec<Vec<u8>> = vec![Vec::new(); size];
+        let mut remote_mem_addrs = vec![0u64; size];
+        remote_mem_addrs[rank] = own_mem_addr;
 
         for peer in 0..size {
             if peer == rank {
@@ -232,15 +298,29 @@ impl OsUContext {
                 .proc_with_nspace(peer as u32)
                 .expect("proc_with_nspace");
 
+            // Get worker address
             let addr_key_bytes = format!("{}{}", PMIX_KEY_UCX_ADDR, '\0');
             let addr_val =
                 get_value(&remote_proc, addr_key_bytes.as_bytes(), None).expect("PMIx_Get addr");
             peer_addrs[peer] = addr_val.bytes_copy();
+
+            // Get RMA data (if available)
+            if rma_enabled {
+                let rkey_key_bytes = format!("{}{}", PMIX_KEY_RKEY, '\0');
+                let rkey_val = get_value(&remote_proc, rkey_key_bytes.as_bytes(), None)
+                    .expect("PMIx_Get rkey");
+                peer_rkey_data[peer] = rkey_val.bytes_copy();
+
+                let mem_key_bytes = format!("{}{}", PMIX_KEY_MEM_ADDR, '\0');
+                let mem_val = get_value(&remote_proc, mem_key_bytes.as_bytes(), None)
+                    .expect("PMIx_Get mem_addr");
+                remote_mem_addrs[peer] = mem_val.uint64();
+            }
         }
 
         drop(packed_addr);
 
-        // 9. Create UCX endpoints to each peer
+        // 14. Create UCX endpoints to each peer
         let mut endpoints = Vec::with_capacity(size);
         for peer in 0..size {
             if peer == rank {
@@ -256,22 +336,35 @@ impl OsUContext {
             endpoints.push(ep);
         }
 
-        // 10. Progress endpoint connections
+        // 15. Progress endpoint connections
         loop {
             if !worker.progress() {
                 break;
             }
         }
 
-        // 11. Flush all endpoints
-        let flush_param = RequestParamBuilder::new().no_imm_cmpl().build();
+        // 16. Unpack remote rkeys (if RMA is enabled)
+        let mut remote_rkeys: Vec<Option<RemoteKey>> = (0..size).map(|_| None).collect();
+        if rma_enabled {
+            for peer in 0..size {
+                if peer == rank {
+                    continue;
+                }
+                let rkey = RemoteKey::unpack(&endpoints[peer], &peer_rkey_data[peer])
+                    .expect("rkey unpack");
+                remote_rkeys[peer] = Some(rkey);
+            }
+        }
+
+        // 17. Flush all endpoints
+        let flush_param = ucx_sys::RequestParamBuilder::new().no_imm_cmpl().build();
         for peer in 0..size {
             flush_ep_blocking(&worker, &endpoints[peer], &flush_param);
         }
 
         eprintln!("[osu] UCX ready (rank={}, size={})", rank, size);
 
-        // 12. Initialize UCC library, context, and team (conditional)
+        // 18. Initialize UCC library, context, and team (conditional)
         let ucc_team = match ucc_backend {
             Some(true) => {
                 eprintln!("[osu] UCC backend: forced on (--ucc)");
@@ -299,7 +392,6 @@ impl OsUContext {
                 if ucc_team.is_some() {
                     (Backend::Ucc, BackendSelection::ForcedUcc)
                 } else {
-                    // Already panicked above, but handle for exhaustiveness
                     unreachable!("UCC init failed with --ucc — should have panicked")
                 }
             }
@@ -326,7 +418,20 @@ impl OsUContext {
             ucc_team,
             backend,
             backend_selection,
+            remote_rkeys,
+            remote_mem_addrs,
+            _memh: memh,
         }
+    }
+
+    /// Create a new unified context (without RMA target registration).
+    ///
+    /// `ucc_backend` controls UCC initialization:
+    /// - `Some(true)`  — force UCC, panic if it fails
+    /// - `Some(false)` — skip UCC entirely, UCX fallback only
+    /// - `None`        — auto-detect (try UCC, fall back to UCX on failure)
+    pub fn init(ucc_backend: Option<bool>) -> Self {
+        Self::init_with_rma(ucc_backend, None)
     }
 
     /// Get the rank of this process.
@@ -361,5 +466,15 @@ impl OsUContext {
                 break;
             }
         }
+    }
+
+    /// Get the remote memory address for a peer (for RMA operations).
+    pub fn remote_mem_addr(&self, peer: usize) -> u64 {
+        self.remote_mem_addrs[peer]
+    }
+
+    /// Get the remote key for a peer (for RMA operations).
+    pub fn remote_rkey(&self, peer: usize) -> Option<&RemoteKey> {
+        self.remote_rkeys[peer].as_ref()
     }
 }

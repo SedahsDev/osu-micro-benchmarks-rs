@@ -1,0 +1,9 @@
+[package]
+name = "osu-onesided"
+version = "0.1.0"
+edition = "2024"
+description = "One-sided RMA benchmarks for OSU Micro-Benchmarks in Rust"
+
+[dependencies]
+osu-common = { path = "../common" }
+ucx-sys = { path = "../../ucx-rs" }

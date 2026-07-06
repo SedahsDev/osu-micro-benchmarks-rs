@@ -297,6 +297,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "osu-onesided"
+version = "0.1.0"
+dependencies = [
+ "osu-common",
+ "ucx-sys",
+]
+
+[[package]]
 name = "osu-pt2pt"
 version = "0.1.0"
 dependencies = [
