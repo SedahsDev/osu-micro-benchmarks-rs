@@ -67,55 +67,25 @@ impl std::fmt::Display for BackendSelection {
     }
 }
 
-/// Resolve the PMIx server URI from environment or local file.
+/// Resolve the PMIx server URI from the local URI file for standalone clients.
 ///
-/// OpenPMIX 6.1.0 ignores `PMIX_SERVER_URI` set via `std::env::set_var`,
-/// so we read the URI ourselves and pass it through `info_with_string_key`.
+/// When running under `prterun`, PMIx_Init finds the server automatically via the
+/// environment variables that prterun sets (PMIX_RANK, PMIX_SERVER_URI61, etc.).
+/// The C library reads these internally — no explicit URI needed.
 ///
-/// Only resolves when running under a PRTE daemon (detected via PMIX_RANK env var).
-/// Standalone single-process runs fall back to bare `PMIx_Init`.
+/// Only resolve the URI file when NOT under prterun (standalone mode) and a
+/// system server daemon is running. This avoids connecting to stale daemons.
 ///
-/// Lookup order (when under prterun):
-/// 1. Versioned env vars: PMIX_SERVER_URI61, PMIX_SERVER_URI51, PMIX_SERVER_URI41, etc.
-///    (prterun sets these — they point to the correct session daemon)
-/// 2. Unversioned PMIX_SERVER_URI env var
-/// 3. URI file at `/run/user/{uid}/prte/uri`
-/// 4. `None` if none are available (bare `PMIx_Init` as before)
-#[allow(clippy::collapsible_if)]
+/// Lookup: URI file at `/run/user/{uid}/prte/uri`
 fn resolve_pmix_server_uri() -> Option<String> {
-    // Only resolve URI when running under prterun (PMIX_RANK is set by the daemon)
-    // Standalone runs should use init(None) to avoid connecting to stale URIs
-    if std::env::var("PMIX_RANK").is_err() {
+    // When running under prterun, let PMIx_Init discover the server via env vars.
+    // Do NOT pass pmix.srvr.uri to PMIx_Init — that key is for PMIx_Tool_Init,
+    // and passing it to PMIx_Init causes ErrUnreach with OpenPMIX 6.1.0.
+    if std::env::var("PMIX_RANK").is_ok() {
         return None;
     }
 
-    // 1. Check versioned env vars (prterun sets PMIX_SERVER_URI61, PMIX_SERVER_URI51, etc.)
-    // These point to the correct session daemon, not the system daemon
-    for key in [
-        "PMIX_SERVER_URI61",
-        "PMIX_SERVER_URI51",
-        "PMIX_SERVER_URI41",
-        "PMIX_SERVER_URI4",
-        "PMIX_SERVER_URI3",
-        "PMIX_SERVER_URI21",
-        "PMIX_SERVER_URI20",
-        "PMIX_SERVER_URI12",
-    ] {
-        if let Ok(uri) = std::env::var(key) {
-            if !uri.is_empty() {
-                return Some(uri);
-            }
-        }
-    }
-
-    // 2. Check unversioned env var
-    if let Ok(uri) = std::env::var("PMIX_SERVER_URI") {
-        if !uri.is_empty() {
-            return Some(uri);
-        }
-    }
-
-    // 3. Read URI file from systemd runtime directory
+    // Standalone mode: try to connect to a running system server via URI file
     // Use getuid() not getpid() — the URI lives under /run/user/{uid}/
     let uid = unsafe { libc::getuid() };
     let uri_path = format!("/run/user/{}/prte/uri", uid);
@@ -171,9 +141,10 @@ impl OsUContext {
     /// benchmarks (osu_put_latency, osu_get_latency, osu_acc_latency).
     pub fn init_with_rma(ucc_backend: Option<bool>, rma_target: Option<&mut [u8]>) -> Self {
         // 1. Initialize PMIx — gets our rank
-        // Pass server URI explicitly (OpenPMIX 6.1.0 ignores env vars for this)
-        let pmix_info =
-            resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
+        // When under prterun: init(None) lets the C library discover the server
+        // via env vars (PMIX_RANK, PMIX_SERVER_URI61, etc.) that prterun sets.
+        // When standalone: resolve_pmix_server_uri() tries the system server URI file.
+        let pmix_info = resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
         let pmix_ctx = init(pmix_info).expect("PMIx init");
         let rank = pmix_ctx.get_rank() as usize;
         let my_proc = pmix_ctx.get_proc();
@@ -198,9 +169,15 @@ impl OsUContext {
             });
         eprintln!("[osu] PMIx rank={}, size={}", rank, size);
 
-        // 3. Initialize UCX context — Tag + RMA + ExportedMemH
-        // Tag for point-to-point benchmarks, RMA + ExportedMemH for one-sided benchmarks.
-        let features = context::Flags::Tag | context::Flags::Rma | context::Flags::ExportedMemH;
+        // 3. Initialize UCX context
+        // Tag for point-to-point benchmarks, RMA + ExportedMemH only for one-sided benchmarks.
+        // On machines without RDMA (no InfiniBand/RoCE), requesting Rma forces UCX to look
+        // for put/compare-and-swap transports that don't exist, causing UCS_ERR_UNREACHABLE
+        // on cross-process endpoints. Only request RMA when actually needed.
+        let mut features = context::Flags::Tag;
+        if rma_target.is_some() {
+            features |= context::Flags::Rma | context::Flags::ExportedMemH;
+        }
         let ctx_params = context::ParamsBuilder::new()
             .features(features)
             .estimated_num_eps(size - 1)
