@@ -144,7 +144,8 @@ impl OsUContext {
         // When under prterun: init(None) lets the C library discover the server
         // via env vars (PMIX_RANK, PMIX_SERVER_URI61, etc.) that prterun sets.
         // When standalone: resolve_pmix_server_uri() tries the system server URI file.
-        let pmix_info = resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
+        let pmix_info =
+            resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
         let pmix_ctx = init(pmix_info).expect("PMIx init");
         let rank = pmix_ctx.get_rank() as usize;
         let my_proc = pmix_ctx.get_proc();
