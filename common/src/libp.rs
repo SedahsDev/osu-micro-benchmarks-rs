@@ -98,9 +98,20 @@ pub fn ensure_hpc_lib_paths() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global mutex to serialize tests that mutate LD_LIBRARY_PATH.
+    /// `env::var` / `env::set_var` operate on process-global state, so
+    /// parallel test execution causes data races. This mutex ensures
+    /// each test gets a clean environment and restores it afterward.
+    static LD_PATH_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_add_to_ld_library_path() {
+        let _guard = LD_PATH_MUTEX.lock().unwrap();
+        // Save original state
+        let original = env::var("LD_LIBRARY_PATH").ok();
+        // Set up clean state
         unsafe {
             env::remove_var("LD_LIBRARY_PATH");
         }
@@ -108,23 +119,54 @@ mod tests {
         assert!(added);
         let entries = ld_library_path_entries();
         assert!(entries.contains(&"/test/path".to_string()));
+        // Restore original state
+        match original {
+            Some(val) => unsafe {
+                env::set_var("LD_LIBRARY_PATH", &val);
+            },
+            None => unsafe {
+                env::remove_var("LD_LIBRARY_PATH");
+            },
+        }
     }
 
     #[test]
     fn test_add_duplicate() {
+        let _guard = LD_PATH_MUTEX.lock().unwrap();
+        let original = env::var("LD_LIBRARY_PATH").ok();
         unsafe {
             env::set_var("LD_LIBRARY_PATH", "/test/path");
         }
         let added = add_to_ld_library_path("/test/path");
         assert!(!added);
+        // Restore
+        match original {
+            Some(val) => unsafe {
+                env::set_var("LD_LIBRARY_PATH", &val);
+            },
+            None => unsafe {
+                env::remove_var("LD_LIBRARY_PATH");
+            },
+        }
     }
 
     #[test]
     fn test_ld_library_path_entries() {
+        let _guard = LD_PATH_MUTEX.lock().unwrap();
+        let original = env::var("LD_LIBRARY_PATH").ok();
         unsafe {
             env::set_var("LD_LIBRARY_PATH", "/a:/b:/c");
         }
         let entries = ld_library_path_entries();
         assert_eq!(entries, vec!["/a", "/b", "/c"]);
+        // Restore
+        match original {
+            Some(val) => unsafe {
+                env::set_var("LD_LIBRARY_PATH", &val);
+            },
+            None => unsafe {
+                env::remove_var("LD_LIBRARY_PATH");
+            },
+        }
     }
 }
