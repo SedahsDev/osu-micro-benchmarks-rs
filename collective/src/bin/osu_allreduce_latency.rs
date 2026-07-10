@@ -11,7 +11,7 @@
 //! prterun -np 2 ./target/release/osu_allreduce_latency
 //! ```
 
-use osu_common::cli::CliArgs;
+use osu_common::cli::{CliArgs, message_sizes};
 use osu_common::output::{self, BenchmarkType};
 use osu_common::runtime::OsUContext;
 use osu_common::timing::Wtime;
@@ -138,21 +138,6 @@ fn allreduce_ucx_fallback(ctx: &OsUContext, sendbuf: &[u8], recvbuf: &mut [u8], 
         let sum: u16 = (0..size).map(|r| gathered[r * msg_size + i] as u16).sum();
         *item = (sum % 256) as u8;
     }
-}
-
-/// Generate message sizes from min to max using the given increment.
-fn message_sizes(args: &CliArgs) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    let mut size = args.min_message_size;
-    while size <= args.max_message_size {
-        sizes.push(size);
-        if size == 0 {
-            size = 1;
-        } else {
-            size *= args.message_size_incr;
-        }
-    }
-    sizes
 }
 
 fn main() {

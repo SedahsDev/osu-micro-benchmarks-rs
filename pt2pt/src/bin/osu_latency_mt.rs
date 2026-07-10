@@ -18,7 +18,7 @@
 //! prterun -np 2 ./target/release/osu_latency_mt
 //! ```
 
-use osu_common::cli::{CliArgs, LARGE_MESSAGE_SIZE};
+use osu_common::cli::{CliArgs, message_sizes};
 use osu_common::output::{self, BenchmarkType};
 use osu_common::runtime::OsUContext;
 use osu_common::timing::{TimingResult, Wtime};
@@ -160,26 +160,6 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         // Barrier between message sizes
         ctx.barrier();
     }
-}
-
-/// Generate message sizes from min to max using the given increment.
-fn message_sizes(args: &CliArgs) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    let mut size = args.min_message_size;
-    while size <= args.max_message_size {
-        sizes.push(size);
-        if size == 0 {
-            size = 1;
-        } else {
-            // Use multiplication for small messages, addition for large
-            if size <= LARGE_MESSAGE_SIZE {
-                size *= args.message_size_incr;
-            } else {
-                size += args.message_size_incr;
-            }
-        }
-    }
-    sizes
 }
 
 fn main() {

@@ -7,6 +7,6 @@ description = "Shared utilities for OSU Micro-Benchmarks in Rust"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
-pmix = { path = "/home/bzf/projects/pmix-rs" }
-ucx-sys = { path = "../../ucx-rs" }
-ucc = { path = "/home/bzf/projects/ucc-rs" }
+pmix = { workspace = true }
+ucx-sys = { workspace = true }
+ucc = { workspace = true }

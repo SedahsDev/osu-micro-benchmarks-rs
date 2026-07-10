@@ -5,7 +5,7 @@
 //! Requires at least 2 processes. All ranks send `msg_size` bytes;
 //! each rank receives `msg_size / numprocs` bytes (element-wise SUM).
 
-use osu_common::cli::CliArgs;
+use osu_common::cli::{CliArgs, message_sizes};
 use osu_common::output::{self, BenchmarkType};
 use osu_common::runtime::OsUContext;
 use osu_common::timing::Wtime;
@@ -80,21 +80,6 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
             output::print_newline(&mut out);
         }
     }
-}
-
-/// Generate message sizes from min to max using the given increment.
-fn message_sizes(args: &CliArgs) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    let mut size = args.min_message_size;
-    while size <= args.max_message_size {
-        sizes.push(size);
-        if size == 0 {
-            size = 1;
-        } else {
-            size *= args.message_size_incr;
-        }
-    }
-    sizes
 }
 
 fn main() {

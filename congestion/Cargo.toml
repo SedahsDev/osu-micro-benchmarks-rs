@@ -5,5 +5,5 @@ edition = "2024"
 description = "Congestion benchmarks for OSU Micro-Benchmarks in Rust"
 
 [dependencies]
-osu-common = { path = "../common" }
-ucx-sys = { path = "../../ucx-rs" }
+osu-common = { workspace = true }
+ucx-sys = { workspace = true }

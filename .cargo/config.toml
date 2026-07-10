@@ -1,5 +1,7 @@
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "link-args=-L/home/bzf/.local/ucc/lib", "-C", "link-args=-L/home/bzf/.local/ucx/lib", "-C", "link-args=-L/home/bzf/projects/prrte/scratch/install/lib", "-C", "link-args=-Wl,-rpath,/home/bzf/.local/ucc/lib:/home/bzf/.local/ucx/lib:/home/bzf/projects/prrte/scratch/install/lib"]
+# Portable defaults only. Set native lib prefixes via env:
+#   export UCX_PREFIX=... UCC_PREFIX=... PMIX_PREFIX=...
+#   export LD_LIBRARY_PATH=$UCX_PREFIX/lib:$UCC_PREFIX/lib:$PMIX_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# See .cargo/config.toml.example for optional local overrides.
 
-[env]
-LD_LIBRARY_PATH = { value = "/home/bzf/.local/ucc/lib:/home/bzf/.local/ucx/lib:/home/bzf/projects/prrte/scratch/install/lib", force = true }
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]

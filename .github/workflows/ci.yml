@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tier0:
+    name: Tier 0 (workspace check)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install system deps (best effort)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpmix-dev libucx-dev libclang-dev pkg-config || true
+
+      - name: Workspace check (needs sibling path deps)
+        run: |
+          if [ -d ../ucx-rs ] && [ -d ../pmix-rs ] && [ -d ../ucc-rs ]; then
+            cargo check --workspace
+            cargo test -p osu-common
+          else
+            echo "::warning::Sibling crates missing; skip full workspace check in isolated checkout"
+          fi

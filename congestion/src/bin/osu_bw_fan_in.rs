@@ -16,7 +16,7 @@
 //! prterun -np 4 ./target/release/osu_bw_fan_in
 //! ```
 
-use osu_common::cli::CliArgs;
+use osu_common::cli::{CliArgs, message_sizes};
 use osu_common::output::{self, BenchmarkType};
 use osu_common::runtime::OsUContext;
 use osu_common::timing::Wtime;
@@ -221,25 +221,6 @@ fn run_fan_in_recv(
             .tag_send(ack_send, ACK_TAG, tag_param)
             .expect("ack_send");
     }
-}
-
-/// Generate message sizes from min to max using the given increment.
-fn message_sizes(args: &CliArgs) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    let mut size = args.min_message_size;
-    while size <= args.max_message_size {
-        sizes.push(size);
-        if size == 0 {
-            size = 1;
-        } else {
-            if size <= osu_common::cli::LARGE_MESSAGE_SIZE {
-                size *= args.message_size_incr;
-            } else {
-                size += args.message_size_incr;
-            }
-        }
-    }
-    sizes
 }
 
 fn main() {

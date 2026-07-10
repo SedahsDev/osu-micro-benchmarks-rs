@@ -283,3 +283,27 @@ impl CliArgs {
         self.skip
     }
 }
+
+/// Generate the list of message sizes to benchmark, from min to max using the increment.
+///
+/// Logic matches the C reference and most existing implementations:
+/// - Start at min_message_size.
+/// - While <= max: push current size, then grow.
+/// - For size==0 special case to 1.
+/// - Exponential growth (multiplication) for sizes <= LARGE_MESSAGE_SIZE.
+/// - Linear growth (addition) for larger sizes (prevents explosion at high MB sizes).
+pub fn message_sizes(args: &CliArgs) -> Vec<usize> {
+    let mut sizes = Vec::new();
+    let mut size = args.min_message_size;
+    while size <= args.max_message_size {
+        sizes.push(size);
+        if size == 0 {
+            size = 1;
+        } else if size <= LARGE_MESSAGE_SIZE {
+            size *= args.message_size_incr;
+        } else {
+            size += args.message_size_incr;
+        }
+    }
+    sizes
+}

@@ -20,9 +20,12 @@ use crate::runtime::context::OsUContext;
 pub struct OsURequest {
     /// Pending tag receive requests, one per peer (None for self).
     recv_reqs: Vec<Option<ucx_sys::Request>>,
-    /// Worker reference (stored as a raw pointer to avoid lifetime issues).
-    /// Safety: OsURequest lifetime is bounded by the OsUContext that created it,
-    /// so the worker outlives this request.
+    /// Worker reference (raw pointer to avoid tying `'a` across all i* APIs).
+    ///
+    /// # Safety invariants
+    /// - Non-null only when `remaining > 0` or multi-rank work was posted.
+    /// - When non-null, the `OsUContext` that created this request must outlive it.
+    /// - Never free or move the Worker while this request is live.
     worker: *const ucx_sys::worker::Worker,
     /// Remaining peers to wait for.
     remaining: usize,
@@ -32,6 +35,13 @@ impl OsURequest {
     /// Test whether this non-blocking operation has completed.
     /// Returns `true` if the operation is complete.
     pub fn test(&mut self) -> bool {
+        // size<=1 barriers store a null worker; treat as already complete.
+        if self.worker.is_null() {
+            return self.remaining == 0;
+        }
+
+        // SAFETY: worker pointer is owned by the OsUContext that created this request
+        // and outlives OsURequest (documented at construction).
         let worker = unsafe { &*self.worker };
 
         for req_opt in self.recv_reqs.iter_mut() {

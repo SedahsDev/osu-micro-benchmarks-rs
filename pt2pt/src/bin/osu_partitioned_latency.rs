@@ -18,7 +18,7 @@
 //! prterun -np 2 ./target/release/osu_partitioned_latency
 //! ```
 
-use osu_common::cli::{CliArgs, LARGE_MESSAGE_SIZE};
+use osu_common::cli::{CliArgs, message_sizes};
 use osu_common::output::{self, BenchmarkType};
 use osu_common::runtime::OsUContext;
 use osu_common::timing::{TimingResult, Wtime};
@@ -122,30 +122,6 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
             output::print_newline(&mut out);
         }
     }
-}
-
-/// Generate partitioned message sizes.
-///
-/// The partitioned latency test uses a specific set of message sizes
-/// that range from 0 up to 1MB with finer granularity at smaller sizes.
-/// This matches the C reference implementation's message size pattern.
-fn message_sizes(args: &CliArgs) -> Vec<usize> {
-    let mut sizes = Vec::new();
-    let mut size = args.min_message_size;
-    while size <= args.max_message_size {
-        sizes.push(size);
-        if size == 0 {
-            size = 1;
-        } else {
-            // Use multiplication for small messages, addition for large
-            if size <= LARGE_MESSAGE_SIZE {
-                size *= args.message_size_incr;
-            } else {
-                size += args.message_size_incr;
-            }
-        }
-    }
-    sizes
 }
 
 fn main() {

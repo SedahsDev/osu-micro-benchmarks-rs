@@ -5,6 +5,6 @@ edition = "2024"
 description = "Collective benchmarks for OSU Micro-Benchmarks in Rust"
 
 [dependencies]
-osu-common = { path = "../common" }
-ucx-sys = { path = "../../ucx-rs" }
-ucc = { path = "../../ucc-rs" }
+osu-common = { workspace = true }
+ucx-sys = { workspace = true }
+ucc = { workspace = true }
