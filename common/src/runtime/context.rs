@@ -15,9 +15,25 @@ use ucx_sys::worker;
 use ucx_sys::worker::RemoteWorkerAddress;
 
 use pmix::{
-    Context, GLOBAL, PmixValueBuilder, RANK_WILDCARD, commit, fence, get_value,
-    info_with_string_key, init, put_value,
+    commit, fence, get_value, info_with_string_key, put_value, GLOBAL, PmixClient,
+    PmixValueBuilder, RANK_WILDCARD,
 };
+
+/// Owns a live [`PmixClient`] and disconnects on drop (session Drop alone does not finalize).
+struct PmixSession(PmixClient);
+
+impl Drop for PmixSession {
+    fn drop(&mut self) {
+        let _ = self.0.disconnect(None);
+    }
+}
+
+impl std::ops::Deref for PmixSession {
+    type Target = PmixClient;
+    fn deref(&self) -> &PmixClient {
+        &self.0
+    }
+}
 
 use crate::runtime::constants::*;
 use crate::runtime::helpers::flush_ep_blocking;
@@ -111,8 +127,8 @@ pub struct OsUContext {
     pub worker: worker::Worker,
     /// UCX context (kept alive for worker lifetime).
     pub _ucx_context: context::Context,
-    /// PMIx context — kept alive; drop calls PMIx_Finalize.
-    pub _pmix_ctx: Context,
+    /// PMIx session — kept alive; drop disconnects (PMIx_Finalize).
+    _pmix_ctx: PmixSession,
     /// UCC team for collective operations (Some when UCC init succeeded).
     pub ucc_team: Option<ucc::team::UccTeam>,
     /// Which backend is active for collectives.
@@ -141,14 +157,14 @@ impl OsUContext {
     /// benchmarks (osu_put_latency, osu_get_latency, osu_acc_latency).
     pub fn init_with_rma(ucc_backend: Option<bool>, rma_target: Option<&mut [u8]>) -> Self {
         // 1. Initialize PMIx — gets our rank
-        // When under prterun: init(None) lets the C library discover the server
+        // When under prterun: connect_new(None) lets the C library discover the server
         // via env vars (PMIX_RANK, PMIX_SERVER_URI61, etc.) that prterun sets.
         // When standalone: resolve_pmix_server_uri() tries the system server URI file.
         let pmix_info =
             resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
-        let pmix_ctx = init(pmix_info).expect("PMIx init");
-        let rank = pmix_ctx.get_rank() as usize;
-        let my_proc = pmix_ctx.get_proc();
+        let pmix_ctx = PmixSession(PmixClient::connect_new(pmix_info).expect("PMIx connect"));
+        let rank = pmix_ctx.require_rank() as usize;
+        let my_proc = pmix_ctx.require_proc();
 
         // 2. Query job size
         let wc_proc = pmix_ctx
@@ -257,7 +273,7 @@ impl OsUContext {
 
         // 11. Commit + Fence (barrier + data exchange)
         commit().expect("PMIx_Commit");
-        fence(my_proc, None).expect("PMIx_Fence");
+        fence(&my_proc, None).expect("PMIx_Fence");
 
         // 12. Retrieve peer addresses via PMIx_Get
         let mut peer_addrs: Vec<Vec<u8>> = vec![Vec::new(); size];
