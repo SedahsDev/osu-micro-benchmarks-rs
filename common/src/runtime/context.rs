@@ -160,8 +160,8 @@ impl OsUContext {
         // When under prterun: connect_new(None) lets the C library discover the server
         // via env vars (PMIX_RANK, PMIX_SERVER_URI61, etc.) that prterun sets.
         // When standalone: resolve_pmix_server_uri() tries the system server URI file.
-        let pmix_info =
-            resolve_pmix_server_uri().map(|uri| info_with_string_key("pmix.srvr.uri", &uri));
+        let pmix_info = resolve_pmix_server_uri()
+            .and_then(|uri| info_with_string_key("pmix.srvr.uri", &uri).ok());
         let pmix_ctx = PmixSession(PmixClient::connect_new(pmix_info).expect("PMIx connect"));
         let rank = pmix_ctx.require_rank() as usize;
         let my_proc = pmix_ctx.require_proc();
@@ -200,8 +200,10 @@ impl OsUContext {
             .estimated_num_eps(size - 1)
             .estimated_num_ppn(2)
             .build();
-        let config = context::Config::default();
-        let ucx_context = context::Context::new(&config, &ctx_params).expect("UCX context init");
+        // Empty name and file select the default UCX configuration.
+        let config = context::Config::read("", "").expect("UCX config read");
+        let mut ucx_context =
+            context::Context::new(&config, &ctx_params).expect("UCX context init");
         drop(config);
 
         // 4. Create worker
