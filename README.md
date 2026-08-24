@@ -19,7 +19,7 @@ cargo build --release --workspace
 
 Workspace members: `common`, `pt2pt`, `collective`, `onesided`, `congestion`, `startup`.
 
-See [`../BUILDING.md`](../BUILDING.md).
+The build command above can be run from the workspace root; the sibling path dependencies must be available at the paths configured in `Cargo.toml`.
 
 ## Status (truthful snapshot)
 
