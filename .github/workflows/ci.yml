@@ -8,29 +8,86 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  OPENPMIX_VERSION: "6.1.0"
+
+defaults:
+  run:
+    working-directory: osu-micro-benchmarks-rs
 
 jobs:
   tier0:
     name: Tier 0 (workspace check)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out osu-micro-benchmarks-rs
+        uses: actions/checkout@v4
+        with:
+          repository: SedahsDev/osu-micro-benchmarks-rs
+          path: osu-micro-benchmarks-rs
+
+      - name: Check out ucx-rs sibling path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: SedahsDev/ucx-rs
+          ref: master
+          path: ucx-rs
+
+      - name: Check out pmix-rs sibling path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: SedahsDev/pmix-rs
+          ref: main
+          path: pmix-rs
+
+      - name: Check out ucc-rs sibling path dependency
+        uses: actions/checkout@v4
+        with:
+          repository: SedahsDev/ucc-rs
+          ref: master
+          path: ucc-rs
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Install system deps (best effort)
+      - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpmix-dev libucx-dev libclang-dev pkg-config || true
+          sudo apt-get install -y \
+            build-essential autoconf automake libtool pkg-config \
+            libevent-dev libhwloc-dev libucx-dev libclang-dev clang
 
-      - name: Workspace check (needs sibling path deps)
+      - name: Cache OpenPMIx ${{ env.OPENPMIX_VERSION }}
+        id: cache-openpmix
+        uses: actions/cache@v4
+        with:
+          path: ~/openpmix-${{ env.OPENPMIX_VERSION }}
+          key: openpmix-${{ env.OPENPMIX_VERSION }}-ubuntu-24.04-v1
+
+      - name: Build OpenPMIx ${{ env.OPENPMIX_VERSION }}
+        if: steps.cache-openpmix.outputs.cache-hit != 'true'
         run: |
-          if [ -d ../ucx-rs ] && [ -d ../pmix-rs ] && [ -d ../ucc-rs ]; then
-            cargo check --workspace
-            cargo test -p osu-common
-          else
-            echo "::warning::Sibling crates missing; skip full workspace check in isolated checkout"
-          fi
+          set -euo pipefail
+          prefix="$HOME/openpmix-${OPENPMIX_VERSION}"
+          cd /tmp
+          git clone --depth 1 --branch "v${OPENPMIX_VERSION}" --recurse-submodules \
+            https://github.com/openpmix/openpmix.git "openpmix-${OPENPMIX_VERSION}"
+          cd "openpmix-${OPENPMIX_VERSION}"
+          ./autogen.pl
+          ./configure --prefix="$prefix" --disable-debug CFLAGS="-O2"
+          make -j"$(nproc)"
+          make install
+
+      - name: Export OpenPMIx environment
+        run: |
+          prefix="$HOME/openpmix-${OPENPMIX_VERSION}"
+          echo "PMIX_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Check workspace
+        run: cargo check --workspace --all-targets
+
+      - name: Check osu-common (incl. tests)
+        run: cargo check -p osu-common --tests
