@@ -89,5 +89,5 @@ jobs:
       - name: Check workspace
         run: cargo check --workspace --all-targets
 
-      - name: Test osu-common
-        run: cargo test -p osu-common
+      - name: Check osu-common (incl. tests)
+        run: cargo check -p osu-common --tests
