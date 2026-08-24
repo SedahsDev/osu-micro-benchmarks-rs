@@ -200,6 +200,7 @@ impl OsUContext {
             .estimated_num_eps(size - 1)
             .estimated_num_ppn(2)
             .build();
+        // Empty name and file select the default UCX configuration.
         let config = context::Config::read("", "").expect("UCX config read");
         let mut ucx_context =
             context::Context::new(&config, &ctx_params).expect("UCX context init");
