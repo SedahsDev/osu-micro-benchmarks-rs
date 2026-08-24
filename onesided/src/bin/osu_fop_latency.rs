@@ -69,7 +69,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         for _ in 0..skip {
             if rank == 0 {
                 flush_blocking(worker, &flush_param);
-                do_fop(ep, &send_buf, remote_addr, rkey);
+                do_fop(worker, ep, &send_buf, remote_addr, rkey);
                 flush_blocking(worker, &flush_param);
             } else {
                 flush_blocking(worker, &flush_param);
@@ -82,7 +82,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
             let start = Wtime::new();
             if rank == 0 {
                 flush_blocking(worker, &flush_param);
-                do_fop(ep, &send_buf, remote_addr, rkey);
+                do_fop(worker, ep, &send_buf, remote_addr, rkey);
                 flush_blocking(worker, &flush_param);
             } else {
                 flush_blocking(worker, &flush_param);
@@ -112,7 +112,13 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 /// The fetch variants require a reply_buffer to receive the old value.
 /// For messages <= 8 bytes, we do a single amo_fadd64.
 /// For larger messages, we iterate over 8-byte chunks.
-fn do_fop(ep: &ucx_sys::ep::Ep, buf: &[u8], remote_addr: u64, rkey: &ucx_sys::rma::RemoteKey) {
+fn do_fop(
+    worker: &ucx_sys::worker::Worker,
+    ep: &ucx_sys::ep::Ep,
+    buf: &[u8],
+    remote_addr: u64,
+    rkey: &ucx_sys::rma::RemoteKey,
+) {
     if buf.is_empty() {
         return;
     }
@@ -122,18 +128,12 @@ fn do_fop(ep: &ucx_sys::ep::Ep, buf: &[u8], remote_addr: u64, rkey: &ucx_sys::rm
         padded[..buf.len()].copy_from_slice(buf);
         let operand = u64::from_le_bytes(padded);
         let mut reply: u64 = 0;
-        let amo_param = ucx_sys::RequestParamBuilder::new()
-            .no_imm_cmpl()
-            .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-            .build();
         let req = ep
-            .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+            .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
             .expect("amo_fadd64");
         // Wait for the fetch-and-add to complete
-        if let Some(r) = req {
-            while !r.check_finished().unwrap_or(false) {
-                // progress is handled by caller's flush
-            }
+        while !req.check_finished().unwrap_or(false) {
+            worker.progress();
         }
         let _ = reply; // old value (discarded for benchmark)
     } else {
@@ -143,15 +143,11 @@ fn do_fop(ep: &ucx_sys::ep::Ep, buf: &[u8], remote_addr: u64, rkey: &ucx_sys::rm
         for chunk in chunks {
             let operand = u64::from_le_bytes(chunk.try_into().unwrap());
             let mut reply: u64 = 0;
-            let amo_param = ucx_sys::RequestParamBuilder::new()
-                .no_imm_cmpl()
-                .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-                .build();
             let req = ep
-                .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+                .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
                 .expect("amo_fadd64");
-            if let Some(r) = req {
-                while !r.check_finished().unwrap_or(false) {}
+            while !req.check_finished().unwrap_or(false) {
+                worker.progress();
             }
             let _ = reply;
         }
@@ -161,15 +157,11 @@ fn do_fop(ep: &ucx_sys::ep::Ep, buf: &[u8], remote_addr: u64, rkey: &ucx_sys::rm
             padded[..remainder.len()].copy_from_slice(remainder);
             let operand = u64::from_le_bytes(padded);
             let mut reply: u64 = 0;
-            let amo_param = ucx_sys::RequestParamBuilder::new()
-                .no_imm_cmpl()
-                .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-                .build();
             let req = ep
-                .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+                .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
                 .expect("amo_fadd64");
-            if let Some(r) = req {
-                while !r.check_finished().unwrap_or(false) {}
+            while !req.check_finished().unwrap_or(false) {
+                worker.progress();
             }
             let _ = reply;
         }
