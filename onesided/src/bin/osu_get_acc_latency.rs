@@ -72,7 +72,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
         for _ in 0..skip {
             if rank == 0 {
                 flush_blocking(worker, &flush_param);
-                do_get_acc(ep, &send_buf, &mut compare_buf, remote_addr, rkey);
+                do_get_acc(worker, ep, &send_buf, &mut compare_buf, remote_addr, rkey);
                 flush_blocking(worker, &flush_param);
             } else {
                 flush_blocking(worker, &flush_param);
@@ -85,7 +85,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
             let start = Wtime::new();
             if rank == 0 {
                 flush_blocking(worker, &flush_param);
-                do_get_acc(ep, &send_buf, &mut compare_buf, remote_addr, rkey);
+                do_get_acc(worker, ep, &send_buf, &mut compare_buf, remote_addr, rkey);
                 flush_blocking(worker, &flush_param);
             } else {
                 flush_blocking(worker, &flush_param);
@@ -115,6 +115,7 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 /// The reply buffer receives the old value at each chunk, matching
 /// MPI_Get_accumulate's behavior of storing original data in cbuf.
 fn do_get_acc(
+    worker: &ucx_sys::worker::Worker,
     ep: &ucx_sys::ep::Ep,
     send_buf: &[u8],
     compare_buf: &mut [u8],
@@ -130,16 +131,13 @@ fn do_get_acc(
         padded[..send_buf.len()].copy_from_slice(send_buf);
         let operand = u64::from_le_bytes(padded);
         let mut reply: u64 = 0;
-        let amo_param = ucx_sys::RequestParamBuilder::new()
-            .no_imm_cmpl()
-            .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-            .build();
         let req = ep
-            .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+            .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
             .expect("amo_fadd64");
-        if let Some(r) = req {
-            while !r.check_finished().unwrap_or(false) {}
+        while !req.check_finished().unwrap_or(false) {
+            worker.progress();
         }
+        drop(req);
         // Store old value in compare buffer
         let reply_bytes = reply.to_le_bytes();
         compare_buf[..send_buf.len()].copy_from_slice(&reply_bytes[..send_buf.len()]);
@@ -152,16 +150,13 @@ fn do_get_acc(
             let operand =
                 u64::from_le_bytes(send_buf[chunk_offset..chunk_offset + 8].try_into().unwrap());
             let mut reply: u64 = 0;
-            let amo_param = ucx_sys::RequestParamBuilder::new()
-                .no_imm_cmpl()
-                .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-                .build();
             let req = ep
-                .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+                .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
                 .expect("amo_fadd64");
-            if let Some(r) = req {
-                while !r.check_finished().unwrap_or(false) {}
+            while !req.check_finished().unwrap_or(false) {
+                worker.progress();
             }
+            drop(req);
             compare_buf[chunk_offset..chunk_offset + 8].copy_from_slice(&reply.to_le_bytes());
         }
 
@@ -171,16 +166,13 @@ fn do_get_acc(
             padded[..remainder.len()].copy_from_slice(remainder);
             let operand = u64::from_le_bytes(padded);
             let mut reply: u64 = 0;
-            let amo_param = ucx_sys::RequestParamBuilder::new()
-                .no_imm_cmpl()
-                .reply_buffer(&mut reply as *mut _ as *mut std::os::raw::c_void)
-                .build();
             let req = ep
-                .amo_fadd64(operand, remote_addr, rkey, &amo_param)
+                .amo_fadd64(worker, operand, remote_addr, rkey, &mut reply)
                 .expect("amo_fadd64");
-            if let Some(r) = req {
-                while !r.check_finished().unwrap_or(false) {}
+            while !req.check_finished().unwrap_or(false) {
+                worker.progress();
             }
+            drop(req);
             let reply_bytes = reply.to_le_bytes();
             let comp_rem = &mut compare_buf[remainder_offset..];
             if !comp_rem.is_empty() {
