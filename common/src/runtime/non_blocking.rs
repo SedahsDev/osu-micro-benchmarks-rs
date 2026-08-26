@@ -45,10 +45,11 @@ impl OsURequest {
         let worker = unsafe { &*self.worker };
 
         for req_opt in self.recv_reqs.iter_mut() {
-            if let Some(req) = req_opt
-                && req.check_finished().unwrap_or(false)
-                && req_opt.take().is_some()
+            if req_opt
+                .as_ref()
+                .is_some_and(|req| req.check_finished().unwrap_or(false))
             {
+                req_opt.take();
                 self.remaining -= 1;
             }
         }
@@ -131,6 +132,20 @@ impl OsUContext {
 
     /// Non-blocking allreduce (sum of u64 values).
     pub fn iallreduce(&self, value: u64) -> OsURequest {
+        if self.openshmem_initialized {
+            // The OpenSHMEM request API borrows its mutable input.  Use the
+            // blocking operation here rather than leaking a per-call buffer or
+            // erasing that borrow to 'static; the completed operation needs no
+            // request-owned scratch storage.
+            let mut values = [value];
+            if openshmem::coll::reduce(ucc::collective::UccReductionOp::Sum, &mut values).is_ok() {
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -184,6 +199,19 @@ impl OsUContext {
 
     /// Non-blocking broadcast: root sends data to all other ranks.
     pub fn ibcast(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) -> OsURequest {
+        if self.openshmem_initialized && sendbuf.len() == recvbuf.len() && !recvbuf.is_empty() {
+            recvbuf.copy_from_slice(sendbuf);
+            // The OpenSHMEM non-blocking request borrows recvbuf.  Complete the
+            // operation synchronously so the request handle never needs to
+            // extend that borrow or retain a self-referential buffer.
+            if openshmem::coll::broadcast(root, recvbuf).is_ok() {
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
 
@@ -290,6 +318,7 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce: all ranks contribute, root gets the result.
+    /// TODO(openshmem): retain UCX fallback until OpenSHMEM can reuse this context's PMIx/UCX lifecycle.
     pub fn ireduce(
         &self,
         sendbuf: &[u8],
@@ -350,6 +379,7 @@ impl OsUContext {
     }
 
     /// Non-blocking scatter: root sends one chunk per rank.
+    /// TODO(openshmem): root-directed scatter is not exposed by the current coll API.
     pub fn iscatter(
         &self,
         sendbuf: &[u8],
@@ -420,6 +450,7 @@ impl OsUContext {
     }
 
     /// Non-blocking gather: all ranks send to root.
+    /// TODO(openshmem): root-directed gather is not exposed by the current coll API.
     pub fn igather(
         &self,
         sendbuf: &[u8],
@@ -489,6 +520,7 @@ impl OsUContext {
     }
 
     /// Non-blocking alltoall.
+    /// TODO(openshmem): alltoall is not exposed by the current coll API.
     pub fn ialltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
@@ -547,6 +579,7 @@ impl OsUContext {
     }
 
     /// Non-blocking allgatherv: each rank sends, all receive with variable counts/displacements.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn iallgatherv(
         &self,
         sendbuf: &[u8],
@@ -621,6 +654,7 @@ impl OsUContext {
     }
 
     /// Non-blocking gatherv: all ranks send to root with variable counts/displacements.
+    /// TODO(openshmem): variable-count root-directed collectives are not exposed by the current coll API.
     pub fn igatherv(
         &self,
         sendbuf: &[u8],
@@ -698,6 +732,7 @@ impl OsUContext {
     }
 
     /// Non-blocking scatterv: root sends variable-count data to all ranks.
+    /// TODO(openshmem): variable-count root-directed collectives are not exposed by the current coll API.
     pub fn iscatterv(
         &self,
         sendbuf: &[u8],
@@ -773,6 +808,7 @@ impl OsUContext {
     }
 
     /// Non-blocking alltoallv: each rank sends variable-size pieces to every peer.
+    /// TODO(openshmem): variable-count alltoall is not exposed by the current coll API.
     pub fn ialltoallv(
         &self,
         sendbuf: &[u8],
@@ -856,6 +892,7 @@ impl OsUContext {
 
     /// Non-blocking alltoallw: like alltoallv but with per-peer datatypes.
     /// Since we only use bytes, this is identical to ialltoallv.
+    /// TODO(openshmem): alltoallw is not exposed by the current coll API.
     pub fn ialltoallw(
         &self,
         sendbuf: &[u8],
@@ -876,6 +913,7 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce_scatter: all ranks send, each rank receives a portion.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn ireduce_scatter(
         &self,
         sendbuf: &[u8],
@@ -947,6 +985,7 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs`.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn ireduce_scatter_block(
         &self,
         sendbuf: &[u8],
@@ -1031,6 +1070,7 @@ impl OsUContext {
 
     /// Non-blocking neighbor allgather (ring topology).
     /// Each rank sends to and receives from its neighbors only.
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_allgather(
         &self,
         sendbuf: &[u8],
@@ -1095,6 +1135,7 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor allgatherv (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_allgatherv(
         &self,
         sendbuf: &[u8],
@@ -1169,6 +1210,7 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor alltoall (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoall(
         &self,
         sendbuf: &[u8],
@@ -1226,6 +1268,7 @@ impl OsUContext {
     }
 
     /// Non-blocking neighbor alltoallv (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoallv(
         &self,
         sendbuf: &[u8],
@@ -1299,6 +1342,7 @@ impl OsUContext {
 
     /// Non-blocking neighbor alltoallw (ring topology).
     /// Same as alltoallv since we only use bytes.
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoallw(
         &self,
         sendbuf: &[u8],

@@ -85,6 +85,9 @@ fn run_benchmark(ctx: &OsUContext, args: &CliArgs) {
 
 /// Perform a blocking allreduce using UCC if available, otherwise UCX fallback.
 fn allreduce_blocking(ctx: &OsUContext, sendbuf: &mut [u8], recvbuf: &mut [u8], msg_size: usize) {
+    if ctx.openshmem_allreduce(sendbuf, recvbuf) {
+        return;
+    }
     if let Some(team) = ctx.ucc_team() {
         // Use UCC allreduce with CHAR datatype
         let req = match team.allreduce(sendbuf, DataType::Uchar, ReductionOp::Sum) {

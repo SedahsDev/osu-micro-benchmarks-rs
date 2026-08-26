@@ -15,8 +15,8 @@ use ucx_sys::worker;
 use ucx_sys::worker::RemoteWorkerAddress;
 
 use pmix::{
-    commit, fence, get_value, info_with_string_key, put_value, GLOBAL, PmixClient,
-    PmixValueBuilder, RANK_WILDCARD,
+    GLOBAL, PmixClient, PmixValueBuilder, RANK_WILDCARD, commit, fence, get_value,
+    info_with_string_key, put_value,
 };
 
 /// Owns a live [`PmixClient`] and disconnects on drop (session Drop alone does not finalize).
@@ -141,6 +141,13 @@ pub struct OsUContext {
     pub remote_mem_addrs: Vec<u64>,
     /// Own registered memory handle (for RMA targets).
     pub _memh: Option<memh::MemHandle>,
+    /// Whether OpenSHMEM owns the collective runtime lifecycle.
+    ///
+    /// This remains false while `OsUContext` owns PMIx and UCX, preventing a
+    /// second OpenSHMEM bootstrap and worker in the same process.
+    // Intentionally hardcoded false pending OpenSHMEM lifecycle integration
+    // with the existing OsUContext; enabling it would double-initialize.
+    pub(crate) openshmem_initialized: bool,
 }
 
 impl OsUContext {
@@ -404,6 +411,12 @@ impl OsUContext {
         // Report final backend selection
         eprintln!("[osu] Backend: {} ({})", backend, backend_selection);
 
+        // Do not call openshmem::init::init() here.  OpenSHMEM performs its own
+        // PMIx bootstrap and creates a second UCX worker, while this context
+        // already owns both resources.  Until OpenSHMEM can adopt these live
+        // handles, retain the UCX/UCC implementations and avoid double init.
+        let openshmem_initialized = false;
+
         OsUContext {
             rank,
             size,
@@ -417,6 +430,7 @@ impl OsUContext {
             remote_rkeys,
             remote_mem_addrs,
             _memh: memh,
+            openshmem_initialized,
         }
     }
 
