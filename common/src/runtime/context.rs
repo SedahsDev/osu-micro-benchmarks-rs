@@ -141,16 +141,11 @@ pub struct OsUContext {
     pub remote_mem_addrs: Vec<u64>,
     /// Own registered memory handle (for RMA targets).
     pub _memh: Option<memh::MemHandle>,
-    /// Whether the OpenSHMEM collective runtime initialized successfully.
+    /// Whether OpenSHMEM owns the collective runtime lifecycle.
+    ///
+    /// This remains false while `OsUContext` owns PMIx and UCX, preventing a
+    /// second OpenSHMEM bootstrap and worker in the same process.
     pub(crate) openshmem_initialized: bool,
-}
-
-impl Drop for OsUContext {
-    fn drop(&mut self) {
-        if self.openshmem_initialized {
-            let _ = openshmem::init::finalize();
-        }
-    }
 }
 
 impl OsUContext {
@@ -414,21 +409,11 @@ impl OsUContext {
         // Report final backend selection
         eprintln!("[osu] Backend: {} ({})", backend, backend_selection);
 
-        // OpenSHMEM is optional: its own PMIx/UCX bootstrap is attempted only
-        // after the existing context is ready. If it cannot initialize, all
-        // supported collective wrappers retain their UCX/UCC fallback.
-        let openshmem_initialized = match openshmem::init::init() {
-            Ok(()) => {
-                eprintln!("[osu] OpenSHMEM collectives: enabled");
-                true
-            }
-            Err(error) => {
-                eprintln!(
-                    "[osu] OpenSHMEM collectives unavailable: {error}; using existing backend"
-                );
-                false
-            }
-        };
+        // Do not call openshmem::init::init() here.  OpenSHMEM performs its own
+        // PMIx bootstrap and creates a second UCX worker, while this context
+        // already owns both resources.  Until OpenSHMEM can adopt these live
+        // handles, retain the UCX/UCC implementations and avoid double init.
+        let openshmem_initialized = false;
 
         OsUContext {
             rank,

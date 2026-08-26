@@ -29,49 +29,12 @@ pub struct OsURequest {
     worker: *const ucx_sys::worker::Worker,
     /// Remaining peers to wait for.
     remaining: usize,
-    shmem: Option<ShmemRequest>,
-}
-
-struct ShmemRequest {
-    request: openshmem::coll::CollectiveRequest<'static>,
-    destination: Option<(*mut u8, usize)>,
-}
-
-impl ShmemRequest {
-    fn new(
-        request: openshmem::coll::CollectiveRequest<'static>,
-        destination: Option<(*mut u8, usize)>,
-    ) -> Self {
-        Self {
-            request,
-            destination,
-        }
-    }
 }
 
 impl OsURequest {
     /// Test whether this non-blocking operation has completed.
     /// Returns `true` if the operation is complete.
     pub fn test(&mut self) -> bool {
-        if let Some(shmem) = self.shmem.as_mut() {
-            let done = shmem.request.test().unwrap_or(false);
-            if done {
-                if let Some((destination, length)) = shmem.destination.take() {
-                    if let Ok(values) = shmem.request.result::<u8>() {
-                        // SAFETY: the caller keeps the destination alive until wait/test
-                        // completes, matching the non-blocking benchmark contract.
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                values.as_ptr(),
-                                destination,
-                                length.min(values.len()),
-                            );
-                        }
-                    }
-                }
-            }
-            return done;
-        }
         // size<=1 barriers store a null worker; treat as already complete.
         if self.worker.is_null() {
             return self.remaining == 0;
@@ -82,10 +45,11 @@ impl OsURequest {
         let worker = unsafe { &*self.worker };
 
         for req_opt in self.recv_reqs.iter_mut() {
-            if let Some(req) = req_opt
-                && req.check_finished().unwrap_or(false)
-                && req_opt.take().is_some()
+            if req_opt
+                .as_ref()
+                .is_some_and(|req| req.check_finished().unwrap_or(false))
             {
+                req_opt.take();
                 self.remaining -= 1;
             }
         }
@@ -113,16 +77,6 @@ impl OsUContext {
     /// Posts sends to all peers and receives from all peers,
     /// returning an `OsURequest` that can be tested/waited on.
     pub fn ibarrier(&self) -> OsURequest {
-        if self.openshmem_initialized {
-            if let Ok(request) = openshmem::coll::barrier_nb() {
-                return OsURequest {
-                    recv_reqs: Vec::new(),
-                    worker: std::ptr::null(),
-                    remaining: 0,
-                    shmem: Some(ShmemRequest::new(request, None)),
-                };
-            }
-        }
         let rank = self.rank;
         let size = self.size;
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -135,7 +89,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -174,22 +127,22 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking allreduce (sum of u64 values).
     pub fn iallreduce(&self, value: u64) -> OsURequest {
         if self.openshmem_initialized {
-            let values: &'static mut [u64] = Box::leak(Box::new([value]));
-            if let Ok(request) =
-                openshmem::coll::reduce_nb(ucc::collective::UccReductionOp::Sum, values)
-            {
+            // The OpenSHMEM request API borrows its mutable input.  Use the
+            // blocking operation here rather than leaking a per-call buffer or
+            // erasing that borrow to 'static; the completed operation needs no
+            // request-owned scratch storage.
+            let mut values = [value];
+            if openshmem::coll::reduce(ucc::collective::UccReductionOp::Sum, &mut values).is_ok() {
                 return OsURequest {
                     recv_reqs: Vec::new(),
                     worker: std::ptr::null(),
                     remaining: 0,
-                    shmem: Some(ShmemRequest::new(request, None)),
                 };
             }
         }
@@ -205,7 +158,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -242,7 +194,6 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
@@ -250,19 +201,14 @@ impl OsUContext {
     pub fn ibcast(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) -> OsURequest {
         if self.openshmem_initialized && sendbuf.len() == recvbuf.len() && !recvbuf.is_empty() {
             recvbuf.copy_from_slice(sendbuf);
-            if let Ok(request) = openshmem::coll::broadcast_nb(root, recvbuf) {
-                // The benchmark keeps recvbuf borrowed until the request is waited.
-                let request = unsafe {
-                    std::mem::transmute::<
-                        openshmem::coll::CollectiveRequest<'_>,
-                        openshmem::coll::CollectiveRequest<'static>,
-                    >(request)
-                };
+            // The OpenSHMEM non-blocking request borrows recvbuf.  Complete the
+            // operation synchronously so the request handle never needs to
+            // extend that borrow or retain a self-referential buffer.
+            if openshmem::coll::broadcast(root, recvbuf).is_ok() {
                 return OsURequest {
                     recv_reqs: Vec::new(),
                     worker: std::ptr::null(),
                     remaining: 0,
-                    shmem: Some(ShmemRequest::new(request, None)),
                 };
             }
         }
@@ -275,7 +221,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -296,7 +241,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             }
         } else {
             let req = self
@@ -312,29 +256,12 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
-                shmem: None,
             }
         }
     }
 
     /// Non-blocking allgather: each rank sends, all receive from all.
     pub fn iallgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
-        if self.openshmem_initialized
-            && !sendbuf.is_empty()
-            && recvbuf.len() == self.size.saturating_mul(msg_size)
-        {
-            if let Ok(request) = openshmem::coll::collect_nb(sendbuf) {
-                return OsURequest {
-                    recv_reqs: Vec::new(),
-                    worker: std::ptr::null(),
-                    remaining: 0,
-                    shmem: Some(ShmemRequest::new(
-                        request,
-                        Some((recvbuf.as_mut_ptr(), recvbuf.len())),
-                    )),
-                };
-            }
-        }
         let rank = self.rank;
         let size = self.size;
 
@@ -344,7 +271,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -388,11 +314,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking reduce: all ranks contribute, root gets the result.
+    /// TODO(openshmem): retain UCX fallback until OpenSHMEM can reuse this context's PMIx/UCX lifecycle.
     pub fn ireduce(
         &self,
         sendbuf: &[u8],
@@ -409,7 +335,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -450,11 +375,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking scatter: root sends one chunk per rank.
+    /// TODO(openshmem): root-directed scatter is not exposed by the current coll API.
     pub fn iscatter(
         &self,
         sendbuf: &[u8],
@@ -474,7 +399,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -507,7 +431,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             }
         } else {
             let req = self
@@ -522,12 +445,12 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
-                shmem: None,
             }
         }
     }
 
     /// Non-blocking gather: all ranks send to root.
+    /// TODO(openshmem): root-directed gather is not exposed by the current coll API.
     pub fn igather(
         &self,
         sendbuf: &[u8],
@@ -546,7 +469,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -563,7 +485,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             }
         } else {
             let my_offset = rank * msg_size;
@@ -594,12 +515,12 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining,
-                shmem: None,
             }
         }
     }
 
     /// Non-blocking alltoall.
+    /// TODO(openshmem): alltoall is not exposed by the current coll API.
     pub fn ialltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
         let rank = self.rank;
         let size = self.size;
@@ -610,7 +531,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -655,11 +575,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking allgatherv: each rank sends, all receive with variable counts/displacements.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn iallgatherv(
         &self,
         sendbuf: &[u8],
@@ -683,7 +603,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -731,11 +650,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking gatherv: all ranks send to root with variable counts/displacements.
+    /// TODO(openshmem): variable-count root-directed collectives are not exposed by the current coll API.
     pub fn igatherv(
         &self,
         sendbuf: &[u8],
@@ -762,7 +681,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -779,7 +697,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             }
         } else {
             let my_displ = rank * recv_count;
@@ -810,12 +727,12 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining,
-                shmem: None,
             }
         }
     }
 
     /// Non-blocking scatterv: root sends variable-count data to all ranks.
+    /// TODO(openshmem): variable-count root-directed collectives are not exposed by the current coll API.
     pub fn iscatterv(
         &self,
         sendbuf: &[u8],
@@ -840,7 +757,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -871,7 +787,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             }
         } else {
             let len = counts[rank];
@@ -888,12 +803,12 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
-                shmem: None,
             }
         }
     }
 
     /// Non-blocking alltoallv: each rank sends variable-size pieces to every peer.
+    /// TODO(openshmem): variable-count alltoall is not exposed by the current coll API.
     pub fn ialltoallv(
         &self,
         sendbuf: &[u8],
@@ -920,7 +835,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -973,12 +887,12 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking alltoallw: like alltoallv but with per-peer datatypes.
     /// Since we only use bytes, this is identical to ialltoallv.
+    /// TODO(openshmem): alltoallw is not exposed by the current coll API.
     pub fn ialltoallw(
         &self,
         sendbuf: &[u8],
@@ -999,6 +913,7 @@ impl OsUContext {
     }
 
     /// Non-blocking reduce_scatter: all ranks send, each rank receives a portion.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn ireduce_scatter(
         &self,
         sendbuf: &[u8],
@@ -1017,7 +932,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1067,11 +981,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
     /// Non-blocking reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs`.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn ireduce_scatter_block(
         &self,
         sendbuf: &[u8],
@@ -1090,7 +1004,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1136,7 +1049,6 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
-            shmem: None,
         }
     }
 
@@ -1158,6 +1070,7 @@ impl OsUContext {
 
     /// Non-blocking neighbor allgather (ring topology).
     /// Each rank sends to and receives from its neighbors only.
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_allgather(
         &self,
         sendbuf: &[u8],
@@ -1174,7 +1087,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1219,11 +1131,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
-            shmem: None,
         }
     }
 
     /// Non-blocking neighbor allgatherv (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_allgatherv(
         &self,
         sendbuf: &[u8],
@@ -1247,7 +1159,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1295,11 +1206,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
-            shmem: None,
         }
     }
 
     /// Non-blocking neighbor alltoall (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoall(
         &self,
         sendbuf: &[u8],
@@ -1316,7 +1227,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1354,11 +1264,11 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
-            shmem: None,
         }
     }
 
     /// Non-blocking neighbor alltoallv (ring topology).
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoallv(
         &self,
         sendbuf: &[u8],
@@ -1388,7 +1298,6 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
-                shmem: None,
             };
         }
 
@@ -1428,12 +1337,12 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
-            shmem: None,
         }
     }
 
     /// Non-blocking neighbor alltoallw (ring topology).
     /// Same as alltoallv since we only use bytes.
+    /// TODO(openshmem): neighborhood collectives are not exposed by the current coll API.
     pub fn ineighbor_alltoallw(
         &self,
         sendbuf: &[u8],

@@ -46,6 +46,9 @@ jobs:
           ref: master
           path: ucc-rs
 
+      - name: Check out openshmem-rs sibling path dependency
+        run: git clone --depth 1 https://github.com/SedahsDev/openshmem-rs.git ../openshmem-rs
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:

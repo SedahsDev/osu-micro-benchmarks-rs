@@ -263,6 +263,7 @@ impl OsUContext {
     }
 
     /// Reduce: all ranks contribute, root gets the result (UCX tag-matching fallback).
+    /// TODO(openshmem): retain UCX fallback until OpenSHMEM can reuse this context's PMIx/UCX lifecycle.
     pub fn reduce(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) {
         let rank = self.rank;
         let size = self.size;
