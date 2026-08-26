@@ -145,6 +145,8 @@ pub struct OsUContext {
     ///
     /// This remains false while `OsUContext` owns PMIx and UCX, preventing a
     /// second OpenSHMEM bootstrap and worker in the same process.
+    // Intentionally hardcoded false pending OpenSHMEM lifecycle integration
+    // with the existing OsUContext; enabling it would double-initialize.
     pub(crate) openshmem_initialized: bool,
 }
 

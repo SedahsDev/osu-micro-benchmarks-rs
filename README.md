@@ -2,15 +2,17 @@
 
 Rust reimplementation of the [OSU Micro-Benchmarks 7.5.2](https://mvapich.cse.ohio-state.edu/benchmarks/) suite.
 
-Stack: **pmix-rs** (bootstrap) + **ucx-sys** (pt2pt/RMA) + **openshmem::coll** (supported blocking collectives) + **ucc/UCX** fallback.
+Stack: **pmix-rs** (bootstrap) + **ucx-sys** (pt2pt/RMA) + **ucc/UCX** (collectives). The **openshmem::coll** routing layer is implemented behind a flag that is currently disabled pending lifecycle integration.
 
 Collective boundary: the current `openshmem::coll` API only provides barrier,
 broadcast, equal-sized allgather (`collect`), and in-place sum allreduce
 (`reduce`). Gather, scatter, alltoall, root-directed
 reduce, reduce-scatter, variable-count, and neighborhood operations remain on
 the existing direct-UCX paths and are marked `TODO(openshmem)` until the API
-grows matching operations. OpenSHMEM initialization is attempted alongside the
-existing OsUContext lifecycle; failures safely fall back to UCC/UCX.
+grows matching operations. The OpenSHMEM routing layer is currently disabled (the flag is
+hardcoded `false`) pending resolution of its double-initialization with the
+existing `OsUContext` lifecycle. Benchmarks therefore continue to use the
+proven UCC/UCX path; the OpenSHMEM path will activate once the flag is wired.
 
 Full code review: [`REVIEW.md`](./REVIEW.md).
 
@@ -31,14 +33,15 @@ The build command above can be run from the workspace root; the sibling path dep
 
 ### OpenSHMEM compatibility boundary
 
-`osu-common` depends on the sibling `../openshmem-rs` crate and initializes its
-collective runtime when available. `OsUContext::barrier`, `bcast`, and
-`allgather` call `openshmem::coll` directly; the allreduce benchmark uses the
-OpenSHMEM byte-sum reduction before trying UCC/UCX. The existing PMIx + UCX
-context remains available for point-to-point operations and fallback behavior.
+`osu-common` depends on the sibling `../openshmem-rs` crate and contains
+collective routing through its `openshmem::coll` API. That routing is currently
+disabled by an intentionally hardcoded `false` flag: OpenSHMEM performs its own
+PMIx bootstrap and creates a second UCX worker, so enabling it alongside the
+existing `OsUContext` would double-initialize the process. Benchmarks therefore
+continue to use the proven UCC/UCX path until the lifecycle integration is
+resolved and the flag is wired.
 
-OpenSHMEM initialization is runtime-detected so builds remain usable when its
-runtime cannot start. Gather, scatter,
+Gather, scatter,
 alltoall, reduce-scatter, variable-count, neighborhood, and nonblocking
 `OsURequest` adapters are not yet wired; their direct UCX implementations are
 retained and marked `TODO(openshmem)`.
