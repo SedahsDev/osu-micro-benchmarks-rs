@@ -14,3 +14,4 @@ osu-common = { path = "common" }
 ucx-sys = { path = "../ucx-rs" }
 pmix = { path = "../pmix-rs" }
 ucc = { path = "../ucc-rs" }
+openshmem = { path = "../openshmem-rs", features = ["collectives"] }

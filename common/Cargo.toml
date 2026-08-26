@@ -10,3 +10,9 @@ libc = "0.2"
 pmix = { workspace = true }
 ucx-sys = { workspace = true }
 ucc = { workspace = true }
+openshmem = { workspace = true }
+
+[features]
+# Compatibility feature; the dependency remains non-optional so all references
+# are available consistently across the workspace.
+openshmem = []

@@ -26,5 +26,7 @@ mod helpers;
 mod non_blocking;
 mod ucc_oob;
 
+pub mod openshmem_compat;
+
 pub use context::OsUContext;
 pub use non_blocking::OsURequest;

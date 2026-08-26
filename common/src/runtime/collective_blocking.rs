@@ -10,8 +10,21 @@ use ucx_sys::RequestParamBuilder;
 use crate::runtime::context::OsUContext;
 
 impl OsUContext {
+    /// Try the OpenSHMEM byte-sum allreduce. Returns false when the optional
+    /// runtime is unavailable so callers can retain their UCX implementation.
+    pub fn openshmem_allreduce(&self, sendbuf: &[u8], recvbuf: &mut [u8]) -> bool {
+        if !self.openshmem_initialized || sendbuf.len() != recvbuf.len() {
+            return false;
+        }
+        recvbuf.copy_from_slice(sendbuf);
+        openshmem::coll::reduce(ucc::collective::UccReductionOp::Sum, recvbuf).is_ok()
+    }
+
     /// Simple barrier using UCX tag matching (all-to-all handshake).
     pub fn barrier(&self) {
+        if self.openshmem_initialized && openshmem::coll::barrier().is_ok() {
+            return;
+        }
         let rank = self.rank;
         let size = self.size;
         let worker = &self.worker;
@@ -209,6 +222,12 @@ impl OsUContext {
 
     /// Broadcast: root sends data to all other ranks (UCX tag-matching fallback).
     pub fn bcast(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) {
+        if self.openshmem_initialized {
+            recvbuf.copy_from_slice(sendbuf);
+            if openshmem::coll::broadcast(root, recvbuf).is_ok() {
+                return;
+            }
+        }
         let rank = self.rank;
         let size = self.size;
 
@@ -296,6 +315,14 @@ impl OsUContext {
 
     /// Allgather: each rank sends its data, all ranks receive from all (UCX tag-matching fallback).
     pub fn allgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
+        if self.openshmem_initialized {
+            if let Ok(values) = openshmem::coll::collect(sendbuf) {
+                if values.len() == recvbuf.len() {
+                    recvbuf.copy_from_slice(&values);
+                    return;
+                }
+            }
+        }
         let rank = self.rank;
         let size = self.size;
 
@@ -337,6 +364,7 @@ impl OsUContext {
     }
 
     /// Alltoall: each rank sends a piece to every peer, receives from every peer.
+    /// TODO(openshmem): `openshmem::coll` has no alltoall API; retain UCX fallback.
     pub fn alltoall(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) {
         let rank = self.rank;
         let size = self.size;
@@ -381,6 +409,8 @@ impl OsUContext {
     }
 
     /// Gather: all ranks send `msg_size` bytes to root.
+    // TODO(openshmem): coll currently exposes no root-directed gather.
+    /// TODO(openshmem): `openshmem::coll` has no gather API; retain UCX fallback.
     pub fn gather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) {
         let rank = self.rank;
         let size = self.size;
@@ -429,6 +459,8 @@ impl OsUContext {
     }
 
     /// Scatter: root sends `msg_size * size` bytes (one chunk per rank).
+    // TODO(openshmem): coll currently exposes no root-directed scatter.
+    /// TODO(openshmem): `openshmem::coll` has no scatter API; retain UCX fallback.
     pub fn scatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize, root: usize) {
         let rank = self.rank;
         let size = self.size;
@@ -481,6 +513,7 @@ impl OsUContext {
     }
 
     /// Gatherv: all ranks send `msg_size` bytes to root; root receives into variable-count slots.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn gatherv(
         &self,
         sendbuf: &[u8],
@@ -549,6 +582,7 @@ impl OsUContext {
     }
 
     /// Scatterv: root sends variable-count data; each rank receives `counts[rank]` bytes.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn scatterv(
         &self,
         sendbuf: &[u8],
@@ -618,6 +652,7 @@ impl OsUContext {
     }
 
     /// Allgatherv: all ranks send `msg_size` bytes; every rank receives into variable-count slots.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn allgatherv(
         &self,
         sendbuf: &[u8],
@@ -705,6 +740,7 @@ impl OsUContext {
     }
 
     /// Alltoallv: each rank sends variable-size pieces to every peer.
+    /// TODO(openshmem): variable-count collectives are not exposed by the current coll API.
     pub fn alltoallv(
         &self,
         sendbuf: &[u8],
@@ -808,6 +844,7 @@ impl OsUContext {
 
     /// Alltoallw: like alltoallv but with per-peer datatypes.
     /// Since we only use bytes, this is identical to alltoallv.
+    /// TODO(openshmem): `alltoallw` is not exposed by the current coll API.
     pub fn alltoallw(
         &self,
         sendbuf: &[u8],
@@ -1072,6 +1109,7 @@ impl OsUContext {
     }
 
     /// Reduce_scatter_block: all ranks send `elemcount` bytes; each rank receives `elemcount / numprocs` bytes.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn reduce_scatter_block(&self, sendbuf: &[u8], recvbuf: &mut [u8], elemcount: usize) {
         let rank = self.rank;
         let size = self.size;
@@ -1145,6 +1183,7 @@ impl OsUContext {
     }
 
     /// Reduce-scatter: all ranks send `total` bytes; each rank receives `counts[rank]` bytes.
+    /// TODO(openshmem): reduce-scatter is not exposed by the current coll API.
     pub fn reducescatter(&self, sendbuf: &[u8], recvbuf: &mut [u8], counts: &[usize]) {
         let rank = self.rank;
         let size = self.size;

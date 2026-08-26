@@ -29,12 +29,49 @@ pub struct OsURequest {
     worker: *const ucx_sys::worker::Worker,
     /// Remaining peers to wait for.
     remaining: usize,
+    shmem: Option<ShmemRequest>,
+}
+
+struct ShmemRequest {
+    request: openshmem::coll::CollectiveRequest<'static>,
+    destination: Option<(*mut u8, usize)>,
+}
+
+impl ShmemRequest {
+    fn new(
+        request: openshmem::coll::CollectiveRequest<'static>,
+        destination: Option<(*mut u8, usize)>,
+    ) -> Self {
+        Self {
+            request,
+            destination,
+        }
+    }
 }
 
 impl OsURequest {
     /// Test whether this non-blocking operation has completed.
     /// Returns `true` if the operation is complete.
     pub fn test(&mut self) -> bool {
+        if let Some(shmem) = self.shmem.as_mut() {
+            let done = shmem.request.test().unwrap_or(false);
+            if done {
+                if let Some((destination, length)) = shmem.destination.take() {
+                    if let Ok(values) = shmem.request.result::<u8>() {
+                        // SAFETY: the caller keeps the destination alive until wait/test
+                        // completes, matching the non-blocking benchmark contract.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                values.as_ptr(),
+                                destination,
+                                length.min(values.len()),
+                            );
+                        }
+                    }
+                }
+            }
+            return done;
+        }
         // size<=1 barriers store a null worker; treat as already complete.
         if self.worker.is_null() {
             return self.remaining == 0;
@@ -76,6 +113,16 @@ impl OsUContext {
     /// Posts sends to all peers and receives from all peers,
     /// returning an `OsURequest` that can be tested/waited on.
     pub fn ibarrier(&self) -> OsURequest {
+        if self.openshmem_initialized {
+            if let Ok(request) = openshmem::coll::barrier_nb() {
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                    shmem: Some(ShmemRequest::new(request, None)),
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -88,6 +135,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -126,11 +174,25 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
     /// Non-blocking allreduce (sum of u64 values).
     pub fn iallreduce(&self, value: u64) -> OsURequest {
+        if self.openshmem_initialized {
+            let values: &'static mut [u64] = Box::leak(Box::new([value]));
+            if let Ok(request) =
+                openshmem::coll::reduce_nb(ucc::collective::UccReductionOp::Sum, values)
+            {
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                    shmem: Some(ShmemRequest::new(request, None)),
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
         let tag_param = RequestParamBuilder::new().no_imm_cmpl().build();
@@ -143,6 +205,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -179,11 +242,30 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
     /// Non-blocking broadcast: root sends data to all other ranks.
     pub fn ibcast(&self, sendbuf: &[u8], recvbuf: &mut [u8], root: usize) -> OsURequest {
+        if self.openshmem_initialized && sendbuf.len() == recvbuf.len() && !recvbuf.is_empty() {
+            recvbuf.copy_from_slice(sendbuf);
+            if let Ok(request) = openshmem::coll::broadcast_nb(root, recvbuf) {
+                // The benchmark keeps recvbuf borrowed until the request is waited.
+                let request = unsafe {
+                    std::mem::transmute::<
+                        openshmem::coll::CollectiveRequest<'_>,
+                        openshmem::coll::CollectiveRequest<'static>,
+                    >(request)
+                };
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                    shmem: Some(ShmemRequest::new(request, None)),
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
 
@@ -193,6 +275,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -213,6 +296,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             }
         } else {
             let req = self
@@ -228,12 +312,29 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
+                shmem: None,
             }
         }
     }
 
     /// Non-blocking allgather: each rank sends, all receive from all.
     pub fn iallgather(&self, sendbuf: &[u8], recvbuf: &mut [u8], msg_size: usize) -> OsURequest {
+        if self.openshmem_initialized
+            && !sendbuf.is_empty()
+            && recvbuf.len() == self.size.saturating_mul(msg_size)
+        {
+            if let Ok(request) = openshmem::coll::collect_nb(sendbuf) {
+                return OsURequest {
+                    recv_reqs: Vec::new(),
+                    worker: std::ptr::null(),
+                    remaining: 0,
+                    shmem: Some(ShmemRequest::new(
+                        request,
+                        Some((recvbuf.as_mut_ptr(), recvbuf.len())),
+                    )),
+                };
+            }
+        }
         let rank = self.rank;
         let size = self.size;
 
@@ -243,6 +344,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -286,6 +388,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -306,6 +409,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -346,6 +450,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -369,6 +474,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -401,6 +507,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             }
         } else {
             let req = self
@@ -415,6 +522,7 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
+                shmem: None,
             }
         }
     }
@@ -438,6 +546,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -454,6 +563,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             }
         } else {
             let my_offset = rank * msg_size;
@@ -484,6 +594,7 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining,
+                shmem: None,
             }
         }
     }
@@ -499,6 +610,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -543,6 +655,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -570,6 +683,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -617,6 +731,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -647,6 +762,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -663,6 +779,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             }
         } else {
             let my_displ = rank * recv_count;
@@ -693,6 +810,7 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining,
+                shmem: None,
             }
         }
     }
@@ -722,6 +840,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -752,6 +871,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             }
         } else {
             let len = counts[rank];
@@ -768,6 +888,7 @@ impl OsUContext {
                 recv_reqs,
                 worker: &self.worker as *const _,
                 remaining: 1,
+                shmem: None,
             }
         }
     }
@@ -799,6 +920,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -851,6 +973,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -894,6 +1017,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -943,6 +1067,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -965,6 +1090,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -1010,6 +1136,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining,
+            shmem: None,
         }
     }
 
@@ -1047,6 +1174,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -1091,6 +1219,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
+            shmem: None,
         }
     }
 
@@ -1118,6 +1247,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -1165,6 +1295,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
+            shmem: None,
         }
     }
 
@@ -1185,6 +1316,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -1222,6 +1354,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
+            shmem: None,
         }
     }
 
@@ -1255,6 +1388,7 @@ impl OsUContext {
                 recv_reqs: Vec::new(),
                 worker: std::ptr::null(),
                 remaining: 0,
+                shmem: None,
             };
         }
 
@@ -1294,6 +1428,7 @@ impl OsUContext {
             recv_reqs,
             worker: &self.worker as *const _,
             remaining: num_neighbors,
+            shmem: None,
         }
     }
 
