@@ -4,6 +4,7 @@
 //! runtime initialization (PMIx/UCX/UCC), and library path helpers.
 
 pub mod cli;
+pub mod device;
 pub mod libp;
 pub mod output;
 pub mod runtime;

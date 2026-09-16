@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Shared utilities for OSU Micro-Benchmarks in Rust"
 
+[features]
+default = []
+# CUDA-runtime device provider (thin FFI shim behind the DeviceProvider seam).
+# Off by default so the workspace builds on hosts with no CUDA toolkit; enable on accelerator
+# hosts with `--features cuda-runtime` (see docs/GPU_COMMUNICATION.md).
+cuda-runtime = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
